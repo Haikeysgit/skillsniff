@@ -9,3 +9,5 @@ All notable changes to this project are documented here. The format follows [Kee
 - Design specification and threat model.
 - Design boards for the overview, flow, architecture, verdict and roadmap.
 - Project documentation: README, security policy, contributing guide and code of conduct.
+- Terminal experience design: block-letter banner, live progress and verdict card.
+- Phase 1 implementation plan.

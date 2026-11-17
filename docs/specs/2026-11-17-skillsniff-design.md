@@ -258,6 +258,42 @@ JSON report shape:
 }
 ```
 
+### 7.9 Terminal experience
+
+When a person runs skillsniff in a terminal, it should feel like a finished product, not a raw tool.
+
+**Banner.** Interactive runs open with a block-letter banner rendered in a teal gradient, plus a status box showing the version, rule pack and mode:
+
+```text
+███████╗██╗  ██╗██╗██╗     ██╗     ███████╗███╗   ██╗██╗███████╗███████╗
+██╔════╝██║ ██╔╝██║██║     ██║     ██╔════╝████╗  ██║██║██╔════╝██╔════╝
+███████╗█████╔╝ ██║██║     ██║     ███████╗██╔██╗ ██║██║█████╗  █████╗
+╚════██║██╔═██╗ ██║██║     ██║     ╚════██║██║╚██╗██║██║██╔══╝  ██╔══╝
+███████║██║  ██╗██║███████╗███████╗███████║██║ ╚████║██║██║     ██║
+╚══════╝╚═╝  ╚═╝╚═╝╚══════╝╚══════╝╚══════╝╚═╝  ╚═══╝╚═╝╚═╝     ╚═╝
+ If a skill smells off, you'll know.            v0.1.0 · rules 2026.11.1
+```
+
+**Live progress.** Each pipeline stage shows as a checklist line with a spinner that turns into a result: fetching, mapping files, then one line per analyzer with its finding count. Example:
+
+```text
+ ✔ Fetched github.com/example/pdf-tools @ a41f9c2      9 files
+ ✔ Instructions                                        1 high
+ ✔ Code + dataflow                                     2 critical
+ ✔ Hidden content                                      clean
+ ✔ Agent config                                        clean
+```
+
+**Verdict card.** The result ends in a bordered card, coloured green, amber or red, with the verdict, the counts, the pinned version, and the top findings.
+
+**Welcome screen.** Running `skillsniff` with no arguments shows the banner, a one-line description, and the three most common commands.
+
+**When the banner and animation are off.** They are shown only when stdout is an interactive terminal. They are always off for `--json`, piped or redirected output, `CI` set, `NO_COLOR` set, or `--quiet`. Agents call skillsniff with `--json`, so they never receive decoration. Without colour support, the output falls back to plain text. Narrower than 80 columns or without UTF-8 output, the banner falls back to a one-line `skillsniff` title.
+
+**Platforms.** Box-drawing and block characters require UTF-8 output; on Windows the binary sets the console output code page to UTF-8 at start-up and restores it on exit. Colour uses 24-bit where the terminal supports it and falls back to 16 colours.
+
+Decoration never changes content: the same findings, in the same order, appear in every mode.
+
 ## 8. Network policy
 
 - **Allowed hosts:** `api.github.com` and `codeload.github.com` (Phase 1 fetch), `api.osv.dev` (Phase 2). Nothing else.
