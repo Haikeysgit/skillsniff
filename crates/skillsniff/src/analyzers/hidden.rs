@@ -21,6 +21,7 @@ pub const HIDDEN_PATTERNS: &[&str] = &[
     "oversized_file",
     "extension_mismatch",
     "parse_budget_exceeded",
+    "invisible_joiner",
 ];
 
 /// Files larger than this are flagged `oversized_file`.
@@ -45,6 +46,38 @@ fn is_zero_width(c: char) -> bool {
 
 fn is_bidi(c: char) -> bool {
     matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+fn is_joiner(c: char) -> bool {
+    matches!(
+        c,
+        '\u{034F}'
+            | '\u{00AD}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{180B}'..='\u{180D}'
+            | '\u{200E}'
+            | '\u{200F}'
+            | '\u{061C}'
+            | '\u{2061}'..='\u{2064}'
+    )
+}
+
+/// Marks and format characters that must not split a token.
+fn is_token_extender(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0300}'..='\u{036F}'
+            | '\u{1AB0}'..='\u{1AFF}'
+            | '\u{1DC0}'..='\u{1DFF}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FE20}'..='\u{FE2F}'
+            | '\u{180B}'..='\u{180D}'
+            | '\u{00AD}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{FEFF}'
+    )
 }
 
 fn is_tag(c: char) -> bool {
@@ -90,10 +123,21 @@ fn script_of(c: char) -> Option<Script> {
     match c as u32 {
         0x41..=0x5A | 0x61..=0x7A => Some(Script::Latin),
         0xD7 | 0xF7 => None,
-        0xAA | 0xBA | 0xC0..=0x24F | 0x1E00..=0x1EFF | 0x2C60..=0x2C7F | 0xA720..=0xA7FF => {
-            Some(Script::Latin)
-        }
+        0xAA
+        | 0xBA
+        | 0xC0..=0x24F
+        | 0x250..=0x2AF
+        | 0x1D00..=0x1D2A
+        | 0x1D2C..=0x1D77
+        | 0x1D79..=0x1D7F
+        | 0x2126
+        | 0x212A
+        | 0x212B
+        | 0x1E00..=0x1EFF
+        | 0x2C60..=0x2C7F
+        | 0xA720..=0xA7FF => Some(Script::Latin),
         0xFF21..=0xFF3A | 0xFF41..=0xFF5A => Some(Script::Latin),
+        0x1D2B | 0x1D78 => Some(Script::Cyrillic),
         0x370..=0x3FF | 0x1F00..=0x1FFF => Some(Script::Greek),
         0x400..=0x52F | 0x1C80..=0x1C8F | 0x2DE0..=0x2DFF | 0xA640..=0xA69F => {
             Some(Script::Cyrillic)
@@ -181,7 +225,7 @@ fn url_hosts(line: &str) -> Vec<(usize, usize)> {
 fn scan_mixed_script(line: &str, file: &str, n: u32, out: &mut Vec<Signal>) {
     let hosts = url_hosts(line);
     for &(s, e) in &hosts {
-        if is_mixed(&line[s..e]) {
+        if line[s..e].split('.').any(is_mixed) {
             out.push(signal(
                 "mixed_script",
                 file,
@@ -195,7 +239,8 @@ fn scan_mixed_script(line: &str, file: &str, n: u32, out: &mut Vec<Signal>) {
     }
     let mut start: Option<usize> = None;
     let flush = |s: usize, e: usize, out: &mut Vec<Signal>| {
-        if hosts.iter().any(|&(hs, he)| s >= hs && e <= he) {
+        let idx = hosts.partition_point(|&(hs, _)| hs <= s);
+        if idx > 0 && e <= hosts[idx - 1].1 {
             return;
         }
         let tok = &line[s..e];
@@ -212,7 +257,7 @@ fn scan_mixed_script(line: &str, file: &str, n: u32, out: &mut Vec<Signal>) {
         }
     };
     for (i, c) in line.char_indices() {
-        if c.is_alphanumeric() || c == '_' {
+        if c.is_alphanumeric() || c == '_' || (start.is_some() && is_token_extender(c)) {
             start.get_or_insert(i);
         } else if let Some(s) = start.take() {
             flush(s, i, out);
@@ -254,13 +299,40 @@ fn scan_entropy(line: &str, file: &str, n: u32, out: &mut Vec<Signal>) {
     }
 }
 
+/// Lines split on `\r\n`, `\n` and lone `\r`.
+fn split_lines(text: &str) -> Vec<&str> {
+    let b = text.as_bytes();
+    let mut lines = Vec::new();
+    let (mut start, mut i) = (0, 0);
+    while i < b.len() {
+        match b[i] {
+            b'\n' => {
+                lines.push(&text[start..i]);
+                start = i + 1;
+            }
+            b'\r' => {
+                lines.push(&text[start..i]);
+                if b.get(i + 1) == Some(&b'\n') {
+                    i += 1;
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    lines.push(&text[start..]);
+    lines
+}
+
 fn scan_text(file: &str, text: &str, out: &mut Vec<Signal>) {
-    for (idx, line) in text.split('\n').enumerate() {
+    for (idx, line) in split_lines(text).into_iter().enumerate() {
         let n = (idx + 1) as u32;
         for (pattern, pred) in [
             ("zero_width", is_zero_width as fn(char) -> bool),
             ("bidi_control", is_bidi),
             ("tag_chars", is_tag),
+            ("invisible_joiner", is_joiner),
         ] {
             if let Some(c) = line.chars().find(|&c| pred(c)) {
                 out.push(signal(pattern, file, n, describe(c)));

@@ -196,6 +196,60 @@ fn pattern_list_is_complete() {
             "oversized_file",
             "extension_mismatch",
             "parse_budget_exceeded",
+            "invisible_joiner",
         ]
     );
+}
+
+#[test]
+fn combining_joiner_does_not_split_mixed_script_token() {
+    let sigs = run(&[("s.py", "p\u{034F}\u{0430}ssword = 1\n".as_bytes().to_vec())]);
+    assert_eq!(with(&sigs, "mixed_script").len(), 1);
+    let sigs = run(&[("s.py", "p\u{00AD}\u{0430}ssword = 1\n".as_bytes().to_vec())]);
+    assert_eq!(with(&sigs, "mixed_script").len(), 1);
+}
+
+#[test]
+fn invisible_joiner_is_flagged() {
+    for c in [
+        '\u{034F}', '\u{00AD}', '\u{FE0F}', '\u{180B}', '\u{200E}', '\u{061C}', '\u{2062}',
+    ] {
+        let sigs = run(&[("a.md", format!("a{c}b\n").into_bytes())]);
+        let j = with(&sigs, "invisible_joiner");
+        assert_eq!(j.len(), 1, "{c:?}");
+        assert!(j[0].evidence.contains("U+"));
+        assert!(!j[0].evidence.contains(c));
+    }
+}
+
+#[test]
+fn many_urls_on_one_line_is_fast() {
+    let line = "http://a ".repeat(100_000);
+    let start = std::time::Instant::now();
+    let sigs = run(&[("a.md", line.into_bytes())]);
+    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert!(with(&sigs, "mixed_script").is_empty());
+}
+
+#[test]
+fn cyrillic_label_with_latin_tld_is_not_mixed() {
+    let sigs = run(&[(
+        "a.md",
+        "https://\u{043F}\u{0440}\u{0438}\u{043C}\u{0435}\u{0440}.com/x\n"
+            .as_bytes()
+            .to_vec(),
+    )]);
+    assert!(with(&sigs, "mixed_script").is_empty());
+    let sigs = run(&[("a.md", "https://p\u{0430}ypal.com/x\n".as_bytes().to_vec())]);
+    assert_eq!(with(&sigs, "mixed_script").len(), 1);
+}
+
+#[test]
+fn lone_cr_line_numbers() {
+    let sigs = run(&[("a.md", "a\rb\rc\u{200B}\r\nd\u{200B}\n".as_bytes().to_vec())]);
+    let lines: Vec<u32> = with(&sigs, "zero_width")
+        .iter()
+        .map(|s| s.locations[0].line)
+        .collect();
+    assert_eq!(lines, vec![3, 4]);
 }
