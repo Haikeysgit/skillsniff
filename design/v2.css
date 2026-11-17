@@ -1,0 +1,43 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  --bg: #F3F5F8;
+  --surface: #FFFFFF;
+  --ink: #0F1B2D;
+  --muted: #5B6779;
+  --faint: #8C97A8;
+  --line: #D5DCE5;
+  --accent: #0B6E69;
+  --accent-soft: #E1F0EE;
+  --agent: #3B4F86;
+  --agent-soft: #E7EBF6;
+  --pass: #1F7A4D;   --pass-soft: #E2F2E8;
+  --caution: #A86A12; --caution-soft: #FBEFD9;
+  --block: #B4232F;  --block-soft: #FBE4E5;
+  --display: 'Space Grotesk', 'Segoe UI', system-ui, sans-serif;
+  --body: 'Inter', 'Segoe UI', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', Consolas, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.45; }
+body { width: 1600px; padding: 60px 64px 48px; }
+
+.head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 40px; }
+.brand { display: flex; align-items: center; gap: 12px; font-family: var(--display); font-weight: 700; font-size: 20px; letter-spacing: -.01em; }
+.brand svg { width: 34px; height: 34px; }
+.step-tag { font-family: var(--mono); font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+h1 { font-family: var(--display); font-size: 52px; font-weight: 700; letter-spacing: -.025em; line-height: 1.05; text-wrap: balance; }
+.sub { font-size: 19px; color: var(--muted); margin-top: 12px; max-width: 860px; }
+.title-block { margin-bottom: 44px; }
+
+svg text { font-family: var(--body); }
+.t-title { font-family: var(--display); font-weight: 600; font-size: 16px; fill: var(--ink); }
+.t-sub { font-size: 13px; fill: var(--muted); }
+.t-mono { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; fill: var(--faint); }
+.t-lane { font-family: var(--mono); font-size: 12px; letter-spacing: .14em; font-weight: 600; }
+
+.rules { display: flex; gap: 14px; margin-top: 36px; }
+.rule-chip { flex: 1; display: flex; align-items: center; gap: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; font-size: 14px; font-weight: 500; }
+.rule-chip i { width: 28px; height: 28px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; font-style: normal; font-family: var(--display); font-weight: 700; flex: none; }
+
+.foot { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--line); font-family: var(--mono); font-size: 11px; color: var(--faint); display: flex; justify-content: space-between; letter-spacing: .04em; }
