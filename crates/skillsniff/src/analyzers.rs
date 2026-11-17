@@ -1,5 +1,7 @@
 //! Analyzer interface and the parallel, isolated runner.
 
+pub mod hidden;
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
