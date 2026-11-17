@@ -173,3 +173,44 @@ fn classification_table() {
         assert_eq!(c[*p], *r, "{p}");
     }
 }
+
+#[test]
+fn billion_laughs_frontmatter_is_rejected_quickly() {
+    let mut doc = String::from("---\nname: demo\ndescription: d\na0: &a0 [x, x]\n");
+    for i in 1..=12 {
+        doc.push_str(&format!("a{i}: &a{i} [*a{p}, *a{p}]\n", p = i - 1));
+    }
+    doc.push_str("---\nbody\n");
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "SKILL.md", doc.as_bytes());
+    let inv = build_inventory(dir.path()).unwrap();
+    let start = std::time::Instant::now();
+    let r = detect_skill(&inv, dir.path());
+    assert!(start.elapsed() < std::time::Duration::from_secs(1));
+    match r {
+        Err(TargetError::BadFrontmatter(m)) => assert!(m.contains("alias"), "{m}"),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[test]
+fn oversized_frontmatter_is_rejected() {
+    let mut doc = String::from("---\nname: demo\ndescription: d\n");
+    doc.push_str(&format!("pad: {}\n", "x".repeat(70 * 1024)));
+    doc.push_str("---\nbody\n");
+    let err = parse_frontmatter(&doc).unwrap_err();
+    assert!(err.contains("64 KiB"), "{err}");
+    let dir = tempfile::tempdir().unwrap();
+    write(dir.path(), "SKILL.md", doc.as_bytes());
+    let inv = build_inventory(dir.path()).unwrap();
+    assert!(matches!(
+        detect_skill(&inv, dir.path()),
+        Err(TargetError::BadFrontmatter(_))
+    ));
+}
+
+#[test]
+fn deeply_nested_frontmatter_does_not_crash() {
+    let doc = format!("---\nk: {}\n---\n", "[".repeat(30_000));
+    let _ = parse_frontmatter(&doc);
+}
