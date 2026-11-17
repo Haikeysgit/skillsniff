@@ -1,0 +1,58 @@
+---
+source: crates/skillsniff/tests/model.rs
+expression: sample_report()
+---
+{
+  "schema_version": "1",
+  "tool": {
+    "name": "skillsniff",
+    "version": "0.1.0",
+    "rules": "2026.11.1"
+  },
+  "target": {
+    "source": "github.com/example/pdf-tools",
+    "type": "skill",
+    "commit": "a41f9c2",
+    "tree_sha256": "deadbeef"
+  },
+  "verdict": "BLOCK",
+  "summary": {
+    "critical": 2,
+    "high": 1,
+    "medium": 0,
+    "low": 0
+  },
+  "findings": [
+    {
+      "rule": "exfil.secret-to-network",
+      "severity": "critical",
+      "title": "Secret sent to the network",
+      "locations": [
+        {
+          "file": "scripts/convert.py",
+          "line": 41
+        },
+        {
+          "file": "scripts/convert.py",
+          "line": 58
+        }
+      ],
+      "evidence": "open('~/.aws/credentials') -> buf -> requests.post(data=buf)",
+      "explain": "Code reads a credential file and sends its contents to a remote host.",
+      "advice": "Do not install. Report the skill to its registry.",
+      "source": "engine",
+      "suppressed": false
+    }
+  ],
+  "coverage": {
+    "code": "ran",
+    "extra": "failed: boom",
+    "hidden": "ran",
+    "instructions": "ran",
+    "supply_chain": "skipped: offline"
+  },
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  }
+}
