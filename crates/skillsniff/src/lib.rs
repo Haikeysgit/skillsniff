@@ -1,5 +1,6 @@
 //! Core engine of skillsniff.
 
+pub mod acquire;
 pub mod model;
 pub mod score;
 

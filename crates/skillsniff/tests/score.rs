@@ -24,16 +24,19 @@ fn cov(entries: &[(&str, Coverage)]) -> BTreeMap<String, Coverage> {
         .collect()
 }
 
+/// Name, findings, coverage, required analyzers, expected verdict.
+type Case = (
+    &'static str,
+    Vec<Finding>,
+    BTreeMap<String, Coverage>,
+    Vec<&'static str>,
+    Verdict,
+);
+
 #[test]
 fn verdict_rules_table() {
     let ran = || cov(&[("code", Coverage::Ran), ("hidden", Coverage::Ran)]);
-    let cases: Vec<(
-        &str,
-        Vec<Finding>,
-        BTreeMap<String, Coverage>,
-        Vec<&str>,
-        Verdict,
-    )> = vec![
+    let cases: Vec<Case> = vec![
         (
             "one critical blocks",
             vec![f("a", Severity::Critical, false)],
