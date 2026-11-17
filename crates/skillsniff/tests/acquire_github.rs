@@ -18,6 +18,18 @@ const SHA: &str = "a41f9c2d7e0b35681c4f9a2e7d3b0c5816f4a9e2";
 // ---------------------------------------------------------------- server
 
 type Handler = Box<dyn Fn(&str) -> Option<(u16, Vec<u8>)> + Send + Sync>;
+/// Returns the complete raw HTTP response; `None` means never reply.
+type RawHandler = Box<dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync>;
+
+fn response(status: u16, headers: &[(&str, &str)], body: &[u8]) -> Vec<u8> {
+    let mut out = format!("HTTP/1.1 {status} X\r\nConnection: close\r\n").into_bytes();
+    for (k, v) in headers {
+        out.extend_from_slice(format!("{k}: {v}\r\n").as_bytes());
+    }
+    out.extend_from_slice(b"\r\n");
+    out.extend_from_slice(body);
+    out
+}
 
 struct Server {
     base: String,
@@ -28,6 +40,15 @@ struct Server {
 /// Serves canned responses; `None` from the handler means accept and never
 /// reply. Each request is the raw header block.
 fn serve(handler: Handler) -> Server {
+    serve_raw(Box::new(move |t| {
+        handler(t).map(|(status, body)| {
+            let len = body.len().to_string();
+            response(status, &[("Content-Length", &len)], &body)
+        })
+    }))
+}
+
+fn serve_raw(handler: RawHandler) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let connections = Arc::new(AtomicUsize::new(0));
@@ -49,7 +70,7 @@ fn serve(handler: Handler) -> Server {
     }
 }
 
-fn handle(mut stream: TcpStream, handler: &Handler, requests: &Mutex<Vec<String>>) {
+fn handle(mut stream: TcpStream, handler: &RawHandler, requests: &Mutex<Vec<String>>) {
     let mut head = Vec::new();
     let mut buf = [0u8; 1024];
     while !head.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -62,20 +83,28 @@ fn handle(mut stream: TcpStream, handler: &Handler, requests: &Mutex<Vec<String>
     requests.lock().unwrap().push(head.clone());
     let target = head.split_whitespace().nth(1).unwrap_or("").to_string();
     match handler(&target) {
-        Some((status, body)) => {
-            let _ = write!(
-                stream,
-                "HTTP/1.1 {status} X\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            );
-            let _ = stream.write_all(&body);
+        Some(bytes) => {
+            let _ = stream.write_all(&bytes);
         }
         None => thread::sleep(Duration::from_secs(10)),
     }
 }
 
 fn tarball(entries: &[(&str, &str)]) -> Vec<u8> {
+    tarball_with(entries, false)
+}
+
+fn tarball_with(entries: &[(&str, &str)], pax_global: bool) -> Vec<u8> {
     let mut b = tar::Builder::new(Vec::new());
+    if pax_global {
+        let rec = format!("52 comment={SHA}\n");
+        let mut h = tar::Header::new_ustar();
+        h.set_entry_type(tar::EntryType::XGlobalHeader);
+        h.set_size(rec.len() as u64);
+        h.set_path("pax_global_header").unwrap();
+        h.set_cksum();
+        b.append(&h, rec.as_bytes()).unwrap();
+    }
     for (path, data) in entries {
         let mut h = tar::Header::new_gnu();
         h.set_size(data.len() as u64);
@@ -284,9 +313,47 @@ fn non_sha_answer_is_a_network_error() {
     assert!(matches!(err, AcquireError::Network(_)), "{err}");
 }
 
+/// Incompressible bytes, so the gzip stream is about as large as its input.
+fn noise(n: usize) -> Vec<u8> {
+    let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+    (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 24) as u8
+        })
+        .collect()
+}
+
+fn noisy_tarball() -> Vec<u8> {
+    let raw = noise(20_000);
+    let mut b = tar::Builder::new(Vec::new());
+    let mut h = tar::Header::new_gnu();
+    h.set_size(raw.len() as u64);
+    h.set_mode(0o644);
+    h.set_cksum();
+    b.append_data(&mut h, "repo-abc/a.bin", raw.as_slice())
+        .unwrap();
+    let raw = b.into_inner().unwrap();
+    let mut enc = GzEncoder::new(Vec::new(), Compression::default());
+    enc.write_all(&raw).unwrap();
+    enc.finish().unwrap()
+}
+
+const CAP: u64 = 1000;
+
+fn assert_cap_error(err: &AcquireError) {
+    assert!(
+        matches!(err, AcquireError::LimitExceeded(m) if m.starts_with("download is larger than")),
+        "{err}"
+    );
+}
+
 #[test]
 fn oversized_download_is_a_limit_error() {
-    let tgz = tarball(&[("repo-abc/a.txt", &"x".repeat(5000))]);
+    let tgz = noisy_tarball();
+    assert!(tgz.len() as u64 > CAP * 5);
     let srv = serve(Box::new(move |t| {
         if t.starts_with("/repos/") {
             Some((200, SHA.as_bytes().to_vec()))
@@ -295,12 +362,164 @@ fn oversized_download_is_a_limit_error() {
         }
     }));
     let limits = Limits {
-        max_total_bytes: 100,
+        max_total_bytes: CAP,
         ..Limits::default()
     };
     let err = acquire_github_with_token(&gh(None), &limits, &srv.base, &srv.base, false, None)
         .unwrap_err();
-    assert!(matches!(err, AcquireError::LimitExceeded(_)), "{err}");
+    assert_cap_error(&err);
+}
+
+#[test]
+fn content_length_is_not_trusted() {
+    // No Content-Length at all: the body runs until the connection closes.
+    let tgz = noisy_tarball();
+    let srv = serve_raw(Box::new(move |t| {
+        if t.starts_with("/repos/") {
+            Some(response(200, &[], SHA.as_bytes()))
+        } else {
+            Some(response(200, &[], &tgz))
+        }
+    }));
+    let limits = Limits {
+        max_total_bytes: CAP,
+        ..Limits::default()
+    };
+    let err = acquire_github_with_token(&gh(None), &limits, &srv.base, &srv.base, false, None)
+        .unwrap_err();
+    assert_cap_error(&err);
+}
+
+#[test]
+fn api_redirect_within_allowed_host_is_followed() {
+    let tgz = tarball(&[("repo-abc/SKILL.md", "# s")]);
+    let srv = serve_raw(Box::new(move |t| {
+        if t == "/repos/o/r/commits/HEAD" {
+            Some(response(301, &[("Location", "/moved/commit")], b""))
+        } else if t == "/moved/commit" {
+            Some(response(200, &[], SHA.as_bytes()))
+        } else if t == format!("/o/r/tar.gz/{SHA}") {
+            Some(response(200, &[], &tgz))
+        } else {
+            Some(response(404, &[], b""))
+        }
+    }));
+    let got = acquire_github_with_token(
+        &gh(None),
+        &Limits::default(),
+        &srv.base,
+        &srv.base,
+        false,
+        None,
+    )
+    .unwrap();
+    assert_eq!(got.commit.as_deref(), Some(SHA));
+}
+
+#[test]
+fn redirect_to_foreign_host_is_refused() {
+    let other = serve(Box::new(|_| Some((200, SHA.as_bytes().to_vec()))));
+    let target = format!("{}/x", other.base);
+    let srv = serve_raw(Box::new(move |_| {
+        Some(response(302, &[("Location", &target)], b""))
+    }));
+    let err = acquire_github_with_token(
+        &gh(None),
+        &Limits::default(),
+        &srv.base,
+        &srv.base,
+        false,
+        Some("tok-xyz"),
+    )
+    .unwrap_err();
+    assert!(matches!(err, AcquireError::Network(_)), "{err}");
+    assert!(!format!("{err}").contains("tok-xyz"));
+    assert_eq!(other.connections.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn authorization_not_sent_after_host_change() {
+    // The API host redirects to the codeload host. Both are allowed, but the
+    // token must not travel with the redirect.
+    let code = serve(Box::new(|_| Some((200, SHA.as_bytes().to_vec()))));
+    let target = format!("{}/sha", code.base);
+    let api = serve_raw(Box::new(move |_| {
+        Some(response(302, &[("Location", &target)], b""))
+    }));
+    let _ = acquire_github_with_token(
+        &gh(None),
+        &Limits::default(),
+        &api.base,
+        &code.base,
+        false,
+        Some("tok-xyz"),
+    );
+    assert!(
+        api.requests.lock().unwrap()[0]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer tok-xyz")
+    );
+    let seen = code.requests.lock().unwrap();
+    let redirected = seen
+        .iter()
+        .find(|r| r.starts_with("GET /sha "))
+        .expect("redirect was followed");
+    assert!(!redirected.contains("tok-xyz"));
+}
+
+#[test]
+fn redirect_loop_stops_after_three_hops() {
+    let srv = serve_raw(Box::new(|_| {
+        Some(response(302, &[("Location", "/again")], b""))
+    }));
+    let err = acquire_github_with_token(
+        &gh(None),
+        &Limits::default(),
+        &srv.base,
+        &srv.base,
+        false,
+        None,
+    )
+    .unwrap_err();
+    assert!(matches!(err, AcquireError::Network(_)), "{err}");
+    assert_eq!(srv.requests.lock().unwrap().len(), 4);
+}
+
+#[test]
+fn redirect_without_location_is_a_network_error() {
+    let srv = serve_raw(Box::new(|_| Some(response(302, &[], b""))));
+    let err = acquire_github_with_token(
+        &gh(None),
+        &Limits::default(),
+        &srv.base,
+        &srv.base,
+        false,
+        None,
+    )
+    .unwrap_err();
+    assert!(matches!(err, AcquireError::Network(_)), "{err}");
+}
+
+#[test]
+fn pax_global_header_is_ignored_when_stripping_top() {
+    let tgz = tarball_with(&[("repo-abc/SKILL.md", "# s")], true);
+    let srv = serve(Box::new(move |t| {
+        if t.starts_with("/repos/") {
+            Some((200, SHA.as_bytes().to_vec()))
+        } else {
+            Some((200, tgz.clone()))
+        }
+    }));
+    let got = acquire_github_with_token(
+        &gh(None),
+        &Limits::default(),
+        &srv.base,
+        &srv.base,
+        false,
+        None,
+    )
+    .unwrap();
+    assert!(got.quarantine.root().join("SKILL.md").is_file());
 }
 
 #[test]
