@@ -1,0 +1,10 @@
+# Normalize line endings so builds and reports are identical on every OS.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary
+*.gz binary
+
+# Inert attack fixtures are test data, not project code.
+tests/fixtures/** linguist-vendored
