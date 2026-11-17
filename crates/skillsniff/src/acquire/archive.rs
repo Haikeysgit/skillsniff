@@ -19,7 +19,7 @@ use super::limits::{
 use super::{
     AcquireError, Acquired, Entry, EntryKind, Limits, Quarantine, create_dir, plan, write_file,
 };
-use crate::model::Signal;
+use crate::model::{Signal, sanitize_evidence};
 
 /// Longest symlink target read from a zip entry.
 const MAX_LINK_TARGET: u64 = 4096;
@@ -175,22 +175,114 @@ fn with_tar<T>(
     result
 }
 
+/// Which part of a tarball to extract.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Selection {
+    /// Drop the single top-level directory, as `tar --strip-components=1`
+    /// does, and refuse tarballs that have more than one.
+    pub(crate) strip_top: bool,
+    /// Keep only this validated, normalised path (after stripping) and what
+    /// is below it; a file is kept under its own name, a folder's contents
+    /// land at the root.
+    pub(crate) subpath: Option<String>,
+}
+
+/// Applies a [`Selection`] to entries in archive order.
+struct Selector<'a> {
+    sel: &'a Selection,
+    top: Option<String>,
+    matched: bool,
+}
+
+impl<'a> Selector<'a> {
+    fn new(sel: &'a Selection) -> Self {
+        Selector {
+            sel,
+            top: None,
+            matched: false,
+        }
+    }
+
+    /// `None` means the entry is dropped (outside the selection, or the
+    /// root of it).
+    fn apply(&mut self, entry: Entry) -> Result<Option<Entry>, AcquireError> {
+        let Entry { mut path, kind } = entry;
+        if self.sel.strip_top {
+            let (first, rest) = match path.split_once('/') {
+                Some((f, r)) => (f.to_string(), Some(r.to_string())),
+                None => (path.clone(), None),
+            };
+            match &self.top {
+                None => self.top = Some(first),
+                Some(t) if *t != first => {
+                    return Err(AcquireError::Unsupported(
+                        "tarball has more than one top-level entry".into(),
+                    ));
+                }
+                Some(_) => {}
+            }
+            match rest {
+                Some(r) => path = r,
+                None if kind == EntryKind::Dir => return Ok(None),
+                None => {
+                    return Err(AcquireError::Unsupported(
+                        "tarball has a file outside its top-level directory".into(),
+                    ));
+                }
+            }
+        }
+        if let Some(sub) = &self.sel.subpath {
+            if path == *sub {
+                self.matched = true;
+                if kind == EntryKind::Dir {
+                    return Ok(None);
+                }
+                path = sub.rsplit('/').next().unwrap_or(sub).to_string();
+            } else if let Some(rest) = path
+                .strip_prefix(sub.as_str())
+                .and_then(|r| r.strip_prefix('/'))
+            {
+                self.matched = true;
+                path = rest.to_string();
+            } else {
+                return Ok(None);
+            }
+        }
+        Ok(Some(Entry { path, kind }))
+    }
+}
+
 /// Extracts a gzip-compressed tar held in memory into `root`.
 pub(crate) fn extract_tar_gz(
     bytes: &[u8],
     limits: &Limits,
     root: &Path,
 ) -> Result<Vec<Signal>, AcquireError> {
+    extract_tar_gz_selected(bytes, limits, root, &Selection::default())
+}
+
+/// Like [`extract_tar_gz`], keeping only the parts named by `selection`. A
+/// requested subpath that matches nothing is `NotFound`.
+pub(crate) fn extract_tar_gz_selected(
+    bytes: &[u8],
+    limits: &Limits,
+    root: &Path,
+    selection: &Selection,
+) -> Result<Vec<Signal>, AcquireError> {
     let compressed = bytes.len() as u64;
 
     // Pass 1: validate, count and plan.
-    let entries = with_tar(bytes, limits, |archive| {
+    let (entries, matched) = with_tar(bytes, limits, |archive| {
+        let mut selector = Selector::new(selection);
         let mut counter = EntryCounter::new(limits);
         let mut declared = 0u64;
         let mut entries = Vec::new();
         for e in archive.entries().map_err(bad_tar)? {
             let e = e.map_err(bad_tar)?;
             let Some((entry, size)) = tar_entry(&e)? else {
+                continue;
+            };
+            let Some(entry) = selector.apply(entry)? else {
                 continue;
             };
             match entry.kind {
@@ -203,18 +295,30 @@ pub(crate) fn extract_tar_gz(
             }
             entries.push(entry);
         }
-        Ok(entries)
+        Ok((entries, selector.matched))
     })?;
+    if let Some(sub) = &selection.subpath {
+        if !matched {
+            return Err(AcquireError::NotFound(format!(
+                "path \"{}\" is not in the archive",
+                sanitize_evidence(sub)
+            )));
+        }
+    }
     let plan = plan(&entries);
 
     // Pass 2: extract what the plan allows, re-checking that each entry is
     // the one planned.
     with_tar(bytes, limits, |archive| {
+        let mut selector = Selector::new(selection);
         let mut budget = Budget::new(limits, Some(compressed));
         let mut planned = entries.iter().zip(&plan.skip);
         for e in archive.entries().map_err(bad_tar)? {
             let e = e.map_err(bad_tar)?;
             let Some((entry, _)) = tar_entry(&e)? else {
+                continue;
+            };
+            let Some(entry) = selector.apply(entry)? else {
                 continue;
             };
             let Some((want, &skip)) = planned.next() else {

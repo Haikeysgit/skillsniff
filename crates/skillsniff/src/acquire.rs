@@ -22,10 +22,12 @@ use crate::model::signal::INVENTORY;
 use crate::model::{Location, Signal, sanitize_evidence};
 
 mod archive;
+mod github;
 mod limits;
 mod local;
 
 pub use archive::acquire_archive;
+pub use github::{acquire_github, acquire_github_with_token};
 pub use limits::Limits;
 pub use local::acquire_local_dir;
 
