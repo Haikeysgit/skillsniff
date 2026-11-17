@@ -1,0 +1,43 @@
+name: Detection problem
+description: skillsniff missed something risky, or flagged something harmless.
+title: "[Detection]: "
+labels: ["detection"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If a clearly malicious skill got a **PASS**, please report it privately through the Security tab instead. Bypasses are security issues.
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What went wrong?
+      options:
+        - False positive (a harmless skill was flagged)
+        - Missed detection (a risky pattern was not flagged)
+        - Wrong severity
+    validations:
+      required: true
+  - type: input
+    id: skill
+    attributes:
+      label: Skill source
+      description: Link to the skill, or describe it if it is private.
+    validations:
+      required: true
+  - type: input
+    id: rule
+    attributes:
+      label: Rule ID
+      description: The rule shown in the report, for example `exfil.secret-to-network`.
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: What did skillsniff report, and what did you expect? Defang any malicious payloads.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: skillsniff version
+      placeholder: "skillsniff --version"

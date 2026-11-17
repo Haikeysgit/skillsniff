@@ -1,0 +1,25 @@
+<!doctype html><html><head><meta charset="utf-8"><link rel="stylesheet" href="v2.css">
+<style>
+html, body { background: #0D151F; color: #E8EEF4; }
+body { width: 1280px; height: 640px; padding: 0 96px; display: flex; flex-direction: column; justify-content: center; position: relative; overflow: hidden; }
+.glow { position: absolute; right: -160px; top: -200px; width: 640px; height: 640px; border-radius: 50%; background: radial-gradient(circle, rgba(60,201,189,.18), rgba(60,201,189,0) 65%); }
+.mark { display: flex; align-items: center; gap: 24px; }
+.mark svg { width: 96px; height: 96px; }
+.word { font-family: var(--display); font-size: 104px; font-weight: 700; letter-spacing: -.045em; line-height: .9; }
+.tag { font-family: var(--display); font-size: 34px; font-weight: 500; margin-top: 34px; }
+.desc { font-size: 20px; color: #93A1B4; margin-top: 12px; }
+.chips { display: flex; gap: 12px; margin-top: 40px; }
+.c { font-family: var(--mono); font-size: 16px; font-weight: 700; padding: 8px 16px; border-radius: 8px; border: 1.5px solid; }
+.p { color: #5ED29A; border-color: #2E9C66; background: rgba(46,156,102,.1); }
+.w { color: #F2B65A; border-color: #C4882A; background: rgba(196,136,42,.1); }
+.b { color: #FF7A84; border-color: #C3343F; background: rgba(195,52,63,.12); }
+</style></head><body>
+<div class="glow"></div>
+<div class="mark">
+  <svg viewBox="0 0 64 64"><rect width="64" height="64" rx="16" fill="#3CC9BD"/><path d="M33 15h10l9 9v23a3 3 0 0 1-3 3H33a3 3 0 0 1-3-3V18a3 3 0 0 1 3-3z" fill="none" stroke="#0D151F" stroke-width="3.2" stroke-linejoin="round"/><path d="M43 15v9h9" fill="none" stroke="#0D151F" stroke-width="3.2" stroke-linejoin="round"/><path d="M11 25q5-5 11 0M9 33q6-5 13 0M11 41q5-5 11 0" fill="none" stroke="#0D151F" stroke-width="3.2" stroke-linecap="round"/></svg>
+  <div class="word">skillsniff</div>
+</div>
+<div class="tag">If a skill smells off, you&rsquo;ll know.</div>
+<div class="desc">Security scanner for AI agent skills. Check a skill before your agent installs it.</div>
+<div class="chips"><span class="c p">PASS</span><span class="c w">CAUTION</span><span class="c b">BLOCK</span></div>
+</body></html>
