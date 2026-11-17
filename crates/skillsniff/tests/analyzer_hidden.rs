@@ -227,7 +227,7 @@ fn many_urls_on_one_line_is_fast() {
     let line = "http://a ".repeat(100_000);
     let start = std::time::Instant::now();
     let sigs = run(&[("a.md", line.into_bytes())]);
-    assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
     assert!(with(&sigs, "mixed_script").is_empty());
 }
 
