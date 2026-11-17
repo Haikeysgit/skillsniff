@@ -9,7 +9,7 @@ use std::fs;
 use std::io::{Cursor, Read};
 use std::path::Path;
 
-use flate2::read::GzDecoder;
+use flate2::read::MultiGzDecoder;
 use zip::ZipArchive;
 use zip::result::ZipError;
 
@@ -109,9 +109,11 @@ fn check_declared(
 
 // ------------------------------------------------------------------- tar
 
-/// Turns a tar entry into an [`Entry`], validating its path. `None` for
-/// entries that are never extracted and need no signal: extension headers,
-/// the root directory, and special files (devices, FIFOs, sparse files).
+/// Turns a tar entry into an [`Entry`], validating its path. Follows GNU
+/// tar: sparse entries and unknown typeflags are regular files, and `D`
+/// (dumpdir) is a directory. `None` only for entries no extractor writes as
+/// content: pax global headers, extension records, devices and FIFOs (which
+/// carry no data), and the root directory.
 fn tar_entry<R: Read>(e: &tar::Entry<'_, R>) -> Result<Option<(Entry, u64)>, AcquireError> {
     use tar::EntryType as T;
     let ty = e.header().entry_type();
@@ -120,21 +122,29 @@ fn tar_entry<R: Read>(e: &tar::Entry<'_, R>) -> Result<Option<(Entry, u64)>, Acq
             .map(|b| String::from_utf8_lossy(&b).into_owned())
     };
     let kind = match ty {
-        T::Regular | T::Continuous => EntryKind::File,
+        T::Regular | T::Continuous | T::GNUSparse => EntryKind::File,
         T::Directory => EntryKind::Dir,
+        _ if ty.as_byte() == b'D' => EntryKind::Dir,
         T::Symlink => EntryKind::Symlink {
             target: link_target(),
         },
         T::Link => EntryKind::Hardlink {
             target: link_target(),
         },
-        _ => {
+        T::Char
+        | T::Block
+        | T::Fifo
+        | T::XGlobalHeader
+        | T::XHeader
+        | T::GNULongName
+        | T::GNULongLink => {
             // Still refuse hostile names on entries we skip.
             if let Ok(raw) = std::str::from_utf8(&e.path_bytes()) {
                 super::validate_entry_path(raw)?;
             }
             return Ok(None);
         }
+        _ => EntryKind::File,
     };
     let raw = std::str::from_utf8(&e.path_bytes())
         .map_err(|_| AcquireError::Unsupported("entry path is not valid UTF-8".into()))?
@@ -148,9 +158,13 @@ fn tar_entry<R: Read>(e: &tar::Entry<'_, R>) -> Result<Option<(Entry, u64)>, Acq
 fn with_tar<T>(
     bytes: &[u8],
     limits: &Limits,
-    f: impl FnOnce(&mut tar::Archive<&mut StreamGuard<GzDecoder<&[u8]>>>) -> Result<T, AcquireError>,
+    f: impl FnOnce(
+        &mut tar::Archive<&mut StreamGuard<MultiGzDecoder<&[u8]>>>,
+    ) -> Result<T, AcquireError>,
 ) -> Result<T, AcquireError> {
-    let mut stream = StreamGuard::new(GzDecoder::new(bytes), limits, bytes.len() as u64);
+    // Every gzip member, as `gzip -d` reads them: a first-member-only
+    // decoder would hide entries stored in later members.
+    let mut stream = StreamGuard::new(MultiGzDecoder::new(bytes), limits, bytes.len() as u64);
     let result = {
         let mut archive = tar::Archive::new(&mut stream);
         f(&mut archive)
@@ -259,17 +273,15 @@ fn extract_zip(bytes: &[u8], limits: &Limits, root: &Path) -> Result<Vec<Signal>
             let f = archive.by_index_raw(i).map_err(zip_err)?;
             (f.name().to_string(), f.unix_mode(), f.size())
         };
-        let is_dir_name = raw.ends_with('/') || raw.ends_with('\\');
-        let kind = match mode.map(|m| m & 0o170_000) {
-            _ if is_dir_name => EntryKind::Dir,
-            Some(0o040_000) => EntryKind::Dir,
-            None | Some(0) | Some(0o100_000) => EntryKind::File,
-            Some(0o120_000) => EntryKind::Symlink { target: None },
-            Some(_) => {
-                // Device, FIFO or socket: validate the name, never extract.
-                super::validate_entry_path(&raw)?;
-                continue;
-            }
+        // As in Info-ZIP and Python's zipfile, only a trailing `/` makes a
+        // directory; mode bits never do. Every other non-symlink entry is a
+        // regular file whatever its mode says, so no data is dropped.
+        let kind = if raw.ends_with('/') {
+            EntryKind::Dir
+        } else if mode.map(|m| m & 0o170_000) == Some(0o120_000) {
+            EntryKind::Symlink { target: None }
+        } else {
+            EntryKind::File
         };
         let Some(mut entry) = Entry::new(&raw, kind)? else {
             continue;

@@ -26,13 +26,26 @@ enum Raw<'a> {
     Dir,
     Symlink(&'a str),
     Hardlink(&'a str),
+    /// Data under an arbitrary typeflag byte.
+    Typed(u8, &'a [u8]),
+}
+
+/// Gzips `data` as one gzip member.
+fn gzip(data: &[u8]) -> Vec<u8> {
+    let mut enc = GzEncoder::new(Vec::new(), Compression::best());
+    enc.write_all(data).unwrap();
+    enc.finish().unwrap()
 }
 
 /// Builds a `.tar.gz` from raw entries. Names are written straight into the
 /// header bytes so hostile names (`../x`, `/etc/passwd`) survive unchanged.
 fn tar_gz(entries: &[(&str, Raw<'_>)]) -> Vec<u8> {
-    let enc = GzEncoder::new(Vec::new(), Compression::best());
-    let mut b = tar::Builder::new(enc);
+    gzip(&tar_raw(entries))
+}
+
+/// Builds an uncompressed tar (with its end marker) from raw entries.
+fn tar_raw(entries: &[(&str, Raw<'_>)]) -> Vec<u8> {
+    let mut b = tar::Builder::new(Vec::new());
     for (name, kind) in entries {
         let mut h = tar::Header::new_gnu();
         let bytes = name.as_bytes();
@@ -61,12 +74,37 @@ fn tar_gz(entries: &[(&str, Raw<'_>)]) -> Vec<u8> {
                 h.set_mode(0o644);
                 &[]
             }
+            Raw::Typed(flag, data) => {
+                h.set_entry_type(tar::EntryType::new(*flag));
+                h.set_mode(0o644);
+                data
+            }
         };
         h.set_size(data.len() as u64);
         h.set_cksum();
         b.append(&h, data).unwrap();
     }
-    b.into_inner().unwrap().finish().unwrap()
+    b.into_inner().unwrap()
+}
+
+/// Rewrites the unix mode (file type and permission bits) that the central
+/// directory records for `name`. The zip writer masks modes to `0o777`, so
+/// odd file types can only be produced by patching.
+fn set_zip_mode(zip: &mut [u8], name: &str, mode: u32) {
+    let mut found = false;
+    let mut i = 0;
+    while i + 46 <= zip.len() {
+        if zip[i..i + 4] == [0x50, 0x4b, 0x01, 0x02] {
+            let name_len = u16::from_le_bytes([zip[i + 28], zip[i + 29]]) as usize;
+            if &zip[i + 46..i + 46 + name_len] == name.as_bytes() {
+                zip[i + 5] = 3; // made by: Unix
+                zip[i + 38..i + 42].copy_from_slice(&(mode << 16).to_le_bytes());
+                found = true;
+            }
+        }
+        i += 1;
+    }
+    assert!(found, "no central directory entry for {name}");
 }
 
 /// Kind of a zip entry.
@@ -734,4 +772,116 @@ fn local_dir_case_collision_is_reported() {
     assert_eq!(sigs.len(), 1);
     assert_eq!(files(sigs[0]), ["Run.sh", "run.sh"]);
     assert_eq!(tree(acq.quarantine.root()), ["SKILL.md"]);
+}
+
+// ------------------------------------- members other extractors would write
+
+#[test]
+fn multi_member_gzip_extracts_all_members() {
+    // One tar stream split across two gzip members at an entry boundary:
+    // member 1 holds SKILL.md and no end marker, member 2 holds run.sh and
+    // the end marker. `gzip -d | tar x` extracts both.
+    let tar = tar_raw(&[
+        ("SKILL.md", Raw::File(b"ok", 0o644)),
+        ("run.sh", Raw::File(b"echo hidden", 0o644)),
+    ]);
+    let split = 1024; // 512-byte header + one padded 512-byte data block
+    let mut bytes = gzip(&tar[..split]);
+    bytes.extend(gzip(&tar[split..]));
+    let (_d, path) = write_archive("multi.tar.gz", &bytes);
+
+    let acq = acquire_archive(&path, &Limits::default()).unwrap();
+    assert_eq!(tree(acq.quarantine.root()), ["SKILL.md", "run.sh"]);
+    assert_eq!(
+        fs::read(acq.quarantine.root().join("run.sh")).unwrap(),
+        b"echo hidden"
+    );
+}
+
+#[test]
+fn tar_sparse_entry_is_extracted() {
+    // GNU sparse file of 12 bytes: a 4-byte hole, then 8 bytes of data.
+    let data = b"echo hi\n";
+    let mut h = tar::Header::new_gnu();
+    h.as_old_mut().name[..6].copy_from_slice(b"run.sh");
+    h.set_entry_type(tar::EntryType::GNUSparse);
+    h.set_mode(0o644);
+    h.set_size(data.len() as u64);
+    {
+        let gnu = h.as_gnu_mut().unwrap();
+        gnu.sparse[0].set_offset(4);
+        gnu.sparse[0].set_length(data.len() as u64);
+        gnu.set_real_size(12);
+    }
+    h.set_cksum();
+    let mut b = tar::Builder::new(Vec::new());
+    b.append(&h, &data[..]).unwrap();
+    let bytes = gzip(&b.into_inner().unwrap());
+    let (_d, path) = write_archive("sparse.tgz", &bytes);
+
+    let acq = acquire_archive(&path, &Limits::default()).unwrap();
+    assert_eq!(tree(acq.quarantine.root()), ["run.sh"]);
+    assert_eq!(
+        fs::read(acq.quarantine.root().join("run.sh")).unwrap(),
+        b"\0\0\0\0echo hi\n"
+    );
+}
+
+#[test]
+fn tar_unknown_typeflag_is_extracted_as_file() {
+    let bytes = tar_gz(&[
+        ("SKILL.md", Raw::File(b"ok", 0o644)),
+        ("run.sh", Raw::Typed(b'Z', b"echo hidden")),
+    ]);
+    let (_d, path) = write_archive("odd.tgz", &bytes);
+    let acq = acquire_archive(&path, &Limits::default()).unwrap();
+    assert_eq!(tree(acq.quarantine.root()), ["SKILL.md", "run.sh"]);
+    assert_eq!(
+        fs::read(acq.quarantine.root().join("run.sh")).unwrap(),
+        b"echo hidden"
+    );
+}
+
+#[test]
+fn tar_fifo_and_device_entries_are_still_skipped() {
+    let bytes = tar_gz(&[
+        ("SKILL.md", Raw::File(b"ok", 0o644)),
+        ("pipe", Raw::Typed(b'6', b"")),
+        ("tty", Raw::Typed(b'3', b"")),
+    ]);
+    let (_d, path) = write_archive("special.tgz", &bytes);
+    let acq = acquire_archive(&path, &Limits::default()).unwrap();
+    assert_eq!(tree(acq.quarantine.root()), ["SKILL.md"]);
+}
+
+#[test]
+fn zip_dir_mode_without_slash_is_extracted_as_file() {
+    let mut bytes = zip_bytes(&[
+        ("SKILL.md", ZipRaw::File(b"ok")),
+        ("run.sh", ZipRaw::File(b"echo hidden")),
+    ]);
+    set_zip_mode(&mut bytes, "run.sh", 0o040_755);
+    let (_d, path) = write_archive("dirmode.zip", &bytes);
+    let acq = acquire_archive(&path, &Limits::default()).unwrap();
+    assert_eq!(tree(acq.quarantine.root()), ["SKILL.md", "run.sh"]);
+    assert_eq!(
+        fs::read(acq.quarantine.root().join("run.sh")).unwrap(),
+        b"echo hidden"
+    );
+}
+
+#[test]
+fn zip_fifo_mode_entry_is_extracted_as_file() {
+    let mut bytes = zip_bytes(&[
+        ("SKILL.md", ZipRaw::File(b"ok")),
+        ("run.sh", ZipRaw::File(b"echo hidden")),
+    ]);
+    set_zip_mode(&mut bytes, "run.sh", 0o010_644);
+    let (_d, path) = write_archive("fifomode.zip", &bytes);
+    let acq = acquire_archive(&path, &Limits::default()).unwrap();
+    assert_eq!(tree(acq.quarantine.root()), ["SKILL.md", "run.sh"]);
+    assert_eq!(
+        fs::read(acq.quarantine.root().join("run.sh")).unwrap(),
+        b"echo hidden"
+    );
 }
