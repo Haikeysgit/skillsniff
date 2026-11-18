@@ -262,3 +262,124 @@ fn verdict_never_decreases() {
         );
     }
 }
+
+fn suppressed(mut f: Finding) -> Finding {
+    f.suppressed = true;
+    f
+}
+
+#[test]
+fn raising_a_suppressed_finding_to_critical_blocks() {
+    let base = report(
+        vec![suppressed(finding(
+            "exec.run-command",
+            Severity::Medium,
+            "a.py",
+            3,
+        ))],
+        Verdict::Pass,
+    );
+    let r = apply_review(base, &doc(&[], &[RAISE_CRIT.into()])).unwrap();
+    assert_eq!(r.verdict, Verdict::Block);
+    assert!(!r.findings[0].suppressed);
+    assert_eq!(r.summary.critical, 1);
+    assert!(
+        r.review
+            .rejected_changes
+            .iter()
+            .any(|m| m.contains("suppression lifted"))
+    );
+}
+
+#[test]
+fn tampered_suppressed_critical_blocks() {
+    let base = report(
+        vec![suppressed(finding(
+            "exec.run-command",
+            Severity::Critical,
+            "a.py",
+            3,
+        ))],
+        Verdict::Pass,
+    );
+    let r = apply_review(base, &doc(&[], &[])).unwrap();
+    assert_eq!(r.verdict, Verdict::Block);
+    assert!(!r.findings[0].suppressed);
+}
+
+#[test]
+fn rule_after_prefix_must_start_alphanumeric() {
+    for rule in ["review..x", "review.-x", "review._x", "review."] {
+        let r = apply_review(pass_report(), &doc(&[addition(rule, "low")], &[])).unwrap();
+        assert!(r.findings.is_empty(), "{rule}");
+        assert_eq!(r.review.rejected_changes.len(), 1, "{rule}");
+    }
+}
+
+#[test]
+fn partial_and_suppressed_raises_are_noted() {
+    let mut high = finding("exec.run-command", Severity::High, "a.py", 3);
+    high.title = "h".into();
+    let low = finding("exec.run-command", Severity::Low, "a.py", 3);
+    let raise = r#"{"rule":"exec.run-command","file":"a.py","line":3,"to":"high","reason":"r"}"#;
+    let r = apply_review(
+        report(vec![high, low], Verdict::Caution),
+        &doc(&[], &[raise.into()]),
+    )
+    .unwrap();
+    assert_eq!(r.review.rejected_changes.len(), 1);
+
+    let sup = suppressed(finding("exec.run-command", Severity::Low, "a.py", 3));
+    let r = apply_review(report(vec![sup], Verdict::Pass), &doc(&[], &[raise.into()])).unwrap();
+    assert_eq!(r.review.rejected_changes.len(), 1);
+    assert!(r.findings[0].suppressed);
+    assert_eq!(r.verdict, Verdict::Pass);
+}
+
+#[test]
+fn verdict_never_decreases_from_pass_and_caution_bases() {
+    let sevs = ["low", "medium", "high", "critical"];
+    let bases = [
+        (
+            report(
+                vec![suppressed(finding(
+                    "exec.run-command",
+                    Severity::Medium,
+                    "a.py",
+                    3,
+                ))],
+                Verdict::Pass,
+            ),
+            Verdict::Pass,
+        ),
+        (
+            report(
+                vec![
+                    finding("exec.run-command", Severity::Medium, "a.py", 3),
+                    suppressed(finding("net.x", Severity::High, "b.py", 1)),
+                ],
+                Verdict::Caution,
+            ),
+            Verdict::Caution,
+        ),
+    ];
+    for (base, floor) in bases {
+        for a in 0..4 {
+            for b in 0..4 {
+                let raises = [
+                    format!(
+                        r#"{{"rule":"exec.run-command","file":"a.py","line":3,"to":"{}","reason":"r"}}"#,
+                        sevs[a]
+                    ),
+                    format!(
+                        r#"{{"rule":"net.x","file":"b.py","line":1,"to":"{}","reason":"r"}}"#,
+                        sevs[b]
+                    ),
+                ];
+                let adds = [addition("review.q", sevs[(a + b) % 4])];
+                let r = apply_review(base.clone(), &doc(&adds, &raises)).unwrap();
+                assert!(r.verdict >= floor);
+            }
+        }
+    }
+}

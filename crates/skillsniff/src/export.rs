@@ -18,6 +18,8 @@ pub enum ExportError {
     CautionNotAllowed,
     /// The destination already exists.
     DestinationExists,
+    /// The destination lies inside the scanned tree.
+    DestinationInsideQuarantine,
     /// The copy does not hash to the scanned tree.
     HashMismatch,
     Io(io::Error),
@@ -31,6 +33,9 @@ impl fmt::Display for ExportError {
                 f.write_str("export refused: the verdict is CAUTION and was not allowed")
             }
             ExportError::DestinationExists => f.write_str("the destination already exists"),
+            ExportError::DestinationInsideQuarantine => {
+                f.write_str("the destination must not be inside the scanned tree")
+            }
             ExportError::HashMismatch => {
                 f.write_str("the exported tree does not match the scanned tree")
             }
@@ -85,6 +90,28 @@ fn copy_files(root: &Path, dest: &Path, files: &[String]) -> Result<(), io::Erro
     Ok(())
 }
 
+/// Whether `dest` lies inside `root`, resolving the nearest existing parent.
+fn inside(root: &Path, dest: &Path) -> bool {
+    let Ok(root) = fs::canonicalize(root) else {
+        return false;
+    };
+    let mut probe = dest.to_path_buf();
+    let mut tail = Vec::new();
+    loop {
+        if let Ok(real) = fs::canonicalize(&probe) {
+            let full = tail.iter().rev().fold(real, |acc, part| acc.join(part));
+            return full.starts_with(&root);
+        }
+        match (probe.file_name().map(|n| n.to_os_string()), probe.parent()) {
+            (Some(name), Some(parent)) => {
+                tail.push(name);
+                probe = parent.to_path_buf();
+            }
+            _ => return false,
+        }
+    }
+}
+
 /// Copies the regular files of the scanned tree into the new folder `dest`.
 ///
 /// Refuses on BLOCK, and on CAUTION unless `allow_caution`. After copying, the
@@ -101,6 +128,10 @@ pub fn export(outcome: &ScanOutcome, dest: &Path, allow_caution: bool) -> Result
         .as_ref()
         .ok_or_else(|| io::Error::other("the scanned tree is no longer available"))?;
     let root = quarantine.root();
+
+    if inside(root, dest) {
+        return Err(ExportError::DestinationInsideQuarantine);
+    }
 
     match fs::create_dir(dest) {
         Ok(()) => {}

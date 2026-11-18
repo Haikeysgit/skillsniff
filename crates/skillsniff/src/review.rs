@@ -7,8 +7,7 @@
 use serde::Deserialize;
 
 use crate::model::{
-    EVIDENCE_MAX_CHARS, Finding, FindingSource, Location, Report, Severity, Summary,
-    sanitize_evidence, sort_findings,
+    Finding, FindingSource, Location, Report, Severity, Summary, sanitize_evidence, sort_findings,
 };
 use crate::scan::REQUIRED_ANALYZERS;
 use crate::score::compute_verdict;
@@ -63,6 +62,8 @@ fn valid_rule(rule: &str) -> bool {
     rule.len() <= MAX_RULE_LEN
         && rule.len() > RULE_PREFIX.len()
         && rule.starts_with(RULE_PREFIX)
+        && rule[RULE_PREFIX.len()..]
+            .starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
         && rule
             .bytes()
             .all(|b| matches!(b, b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'-'))
@@ -80,19 +81,7 @@ fn valid_path(path: &str) -> bool {
 }
 
 fn shown(s: &str) -> String {
-    cap(s)
-}
-
-/// Sanitizes `s` and keeps at most 200 characters, ellipsis included.
-fn cap(s: &str) -> String {
-    let clean = sanitize_evidence(s);
-    if clean.chars().count() > EVIDENCE_MAX_CHARS {
-        let mut out: String = clean.chars().take(EVIDENCE_MAX_CHARS - 1).collect();
-        out.push('…');
-        out
-    } else {
-        clean
-    }
+    sanitize_evidence(s)
 }
 
 fn build_addition(a: &Addition) -> Result<Finding, String> {
@@ -118,7 +107,7 @@ fn build_addition(a: &Addition) -> Result<Finding, String> {
     Ok(Finding {
         rule: a.rule.clone(),
         severity: a.severity,
-        title: cap(&a.title),
+        title: sanitize_evidence(&a.title),
         locations: a
             .locations
             .iter()
@@ -127,8 +116,8 @@ fn build_addition(a: &Addition) -> Result<Finding, String> {
                 line: l.line,
             })
             .collect(),
-        evidence: cap(&a.evidence),
-        explain: cap(&a.reason),
+        evidence: sanitize_evidence(&a.evidence),
+        explain: sanitize_evidence(&a.reason),
         advice: String::new(),
         source: FindingSource::Review,
         suppressed: false,
@@ -179,30 +168,55 @@ pub fn apply_review(mut report: Report, review_json: &str) -> Result<Report, Str
                     .iter()
                     .any(|l| l.file == r.file && l.line == r.line)
         };
-        let mut matched = false;
-        let mut raised = false;
+        let mut matched = 0usize;
+        let mut raised = 0usize;
         for f in report.findings.iter_mut().filter(|f| matches_loc(f)) {
-            matched = true;
+            matched += 1;
             if r.to > f.severity {
                 f.severity = r.to;
-                let note = cap(&r.reason);
+                let note = sanitize_evidence(&r.reason);
                 f.explain = format!("{} Review: {note}", f.explain);
-                raised = true;
+                raised += 1;
+                if f.suppressed && r.to < Severity::Critical {
+                    rejected.push(format!(
+                        "raise of {:?} at {:?}:{} applied to a suppressed finding; it stays suppressed",
+                        shown(&r.rule),
+                        shown(&r.file),
+                        r.line
+                    ));
+                }
             }
         }
-        if !matched {
+        if matched == 0 {
             rejected.push(format!(
                 "raise of {:?} at {:?}:{} rejected: no matching finding",
                 shown(&r.rule),
                 shown(&r.file),
                 r.line
             ));
-        } else if !raised {
+        } else if raised == 0 {
             rejected.push(format!(
                 "raise of {:?} at {:?}:{} rejected: target severity is not higher",
                 shown(&r.rule),
                 shown(&r.file),
                 r.line
+            ));
+        } else if raised < matched {
+            rejected.push(format!(
+                "raise of {:?} at {:?}:{} applied to {raised} of {matched} matching findings; the rest are not lower than the target",
+                shown(&r.rule),
+                shown(&r.file),
+                r.line
+            ));
+        }
+    }
+
+    for f in report.findings.iter_mut() {
+        if f.suppressed && f.severity == Severity::Critical {
+            f.suppressed = false;
+            rejected.push(format!(
+                "suppression lifted: {} is critical",
+                shown(&f.rule)
             ));
         }
     }

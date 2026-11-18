@@ -114,3 +114,16 @@ fn changed_tree_reports_mismatch_and_removes_destination() {
     ));
     assert!(!dest.exists());
 }
+
+#[test]
+fn destination_inside_quarantine_is_refused() {
+    let src = plain_skill();
+    let outcome = scan_dir(src.path());
+    let root = outcome.quarantine.as_ref().unwrap().root().to_path_buf();
+    let dest = root.join("inner");
+    assert!(matches!(
+        export(&outcome, &dest, false),
+        Err(ExportError::DestinationInsideQuarantine)
+    ));
+    assert!(!dest.exists());
+}
