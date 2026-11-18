@@ -2,6 +2,7 @@
 
 pub mod code;
 pub mod hidden;
+pub mod instructions;
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -149,4 +150,66 @@ pub fn run_analyzers(
         coverage.insert(a.id().to_string(), out.coverage);
     }
     (signals, coverage)
+}
+
+/// Characters that render as nothing (zero-width, bidi, joiners, tags) and so
+/// can hide text inside a phrase.
+pub(crate) fn is_invisible(c: char) -> bool {
+    matches!(
+        c,
+        '\u{00AD}'
+            | '\u{034F}'
+            | '\u{061C}'
+            | '\u{180B}'..='\u{180D}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{FEFF}'
+            | '\u{E0000}'..='\u{E007F}'
+    )
+}
+
+/// Evidence text: control and invisible characters are escaped as `\u{XXXX}`
+/// and the result is at most 200 characters.
+pub(crate) fn safe_evidence(s: &str) -> String {
+    const MAX: usize = 200;
+    let mut out = String::new();
+    let mut count = 0;
+    for c in s.chars() {
+        let piece = if c.is_control() || is_invisible(c) {
+            format!("\\u{{{:04X}}}", c as u32)
+        } else {
+            c.to_string()
+        };
+        let n = piece.chars().count();
+        if count + n > MAX {
+            break;
+        }
+        out.push_str(&piece);
+        count += n;
+    }
+    out
+}
+
+/// File text, decoded lossily when it is not valid UTF-8. `None` only when the
+/// file is outside the inventory or over the read limit.
+pub(crate) fn read_lossy(ctx: &ScanContext, path: &str) -> Option<String> {
+    let bytes = ctx.read_bytes(path)?;
+    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes);
+    Some(String::from_utf8_lossy(bytes).into_owned())
+}
+
+/// Signal for a file that could not be read, so it is never skipped silently.
+pub(crate) fn unreadable_signal(file: &str) -> Signal {
+    Signal {
+        kind: crate::model::signal::HIDDEN.to_string(),
+        fields: BTreeMap::from([("pattern".to_string(), "parse_budget_exceeded".to_string())]),
+        locations: vec![crate::model::Location {
+            file: file.to_string(),
+            line: 1,
+        }],
+        evidence: "file could not be read for analysis (over the size limit)".to_string(),
+    }
 }
