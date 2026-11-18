@@ -51,11 +51,104 @@ pub const SHELLS: &[&str] = &[
     "pwsh",
 ];
 
-/// `env` launchers that run the program named by the next word.
-pub const ENV_LAUNCHERS: &[&str] = &["env", "/usr/bin/env", "/bin/env"];
+/// POSIX shells, by program base name.
+const POSIX_SHELLS: &[&str] = &["sh", "bash", "dash", "zsh", "ksh", "ash", "mksh", "fish"];
 
-/// Flags that make a shell run the next word as a command.
-pub const SHELL_FLAGS: &[&str] = &["-c", "/c", "-Command", "-command"];
+/// Programs that run the command given by their remaining words.
+const WRAPPERS: &[&str] = &[
+    "sudo", "doas", "env", "nohup", "command", "builtin", "exec", "nice", "setsid", "stdbuf",
+    "busybox", "time", "timeout", "ionice",
+];
+
+/// Options of a wrapper that take the next word as a value.
+fn wrapper_value_options(name: &str) -> &'static [&'static str] {
+    match name {
+        "sudo" | "doas" => &[
+            "-u", "-g", "-p", "-C", "-D", "-r", "-t", "-U", "-T", "--user", "--group",
+        ],
+        "env" => &["-u", "--unset", "-C", "--chdir"],
+        "nice" => &["-n", "--adjustment"],
+        "ionice" => &["-c", "-n", "-p", "-t"],
+        "timeout" => &["-s", "--signal", "-k", "--kill-after"],
+        "stdbuf" => &["-i", "-o", "-e"],
+        "exec" => &["-a"],
+        _ => &[],
+    }
+}
+
+/// Whether a word makes a shell run the next word as a command: a short
+/// option cluster holding `c` (`-c`, `-lc`, `-ec`), cmd's `/c` or `/k`, or
+/// PowerShell's `-Command` in any case or abbreviation.
+pub fn is_shell_flag(word: &str) -> bool {
+    let lower = word.to_ascii_lowercase();
+    if matches!(lower.as_str(), "/c" | "/k") {
+        return true;
+    }
+    let Some(rest) = lower.strip_prefix('-') else {
+        return false;
+    };
+    if rest.is_empty() || !rest.bytes().all(|b| b.is_ascii_alphabetic()) {
+        return false;
+    }
+    "command".starts_with(rest) || (rest.len() <= 6 && rest.contains('c'))
+}
+
+/// Program name without directories, case or an `.exe` suffix.
+pub fn program_name(word: &str) -> String {
+    let base = word.rsplit(['/', '\\']).next().unwrap_or(word);
+    let lower = base.to_ascii_lowercase();
+    lower.strip_suffix(".exe").unwrap_or(&lower).to_string()
+}
+
+/// Whether a program word names a POSIX shell (`sh`, `/bin/bash`).
+pub fn is_posix_shell(word: &str) -> bool {
+    POSIX_SHELLS.contains(&program_name(word).as_str())
+}
+
+/// Index of the program a command vector runs once launchers in front of
+/// it are skipped: `sudo`, `env` and similar wrappers with their options,
+/// option values and `NAME=value` assignments. Equals `words.len()` when no
+/// program is left (`exec 3<&-`, `command -v curl` only looks a name up).
+pub fn program_index<S: AsRef<str>>(words: &[S]) -> usize {
+    let mut i = 0;
+    while let Some(w) = words.get(i) {
+        let name = program_name(w.as_ref());
+        if !WRAPPERS.contains(&name.as_str()) {
+            break;
+        }
+        i += 1;
+        let mut duration_left = name == "timeout";
+        while let Some(w) = words.get(i).map(AsRef::as_ref) {
+            if w == "--" {
+                i += 1;
+                break;
+            }
+            let assignment = name == "env" && is_assignment(w);
+            let duration = duration_left && w.starts_with(|c: char| c.is_ascii_digit());
+            duration_left &= !duration;
+            if !(w.starts_with('-') || assignment || duration) {
+                break;
+            }
+            if name == "command" && matches!(w, "-v" | "-V") {
+                return words.len();
+            }
+            if wrapper_value_options(&name).contains(&w) {
+                i += 1;
+            }
+            i += 1;
+        }
+    }
+    i.min(words.len())
+}
+
+/// `NAME=value` with a shell variable name.
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        !name.is_empty()
+            && !name.starts_with(|c: char| c.is_ascii_digit())
+            && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+    })
+}
 
 /// Stands for a non-literal piece when command text is folded, so that
 /// pieces on either side of it never join into a word.
@@ -133,6 +226,9 @@ const SENSITIVE_WRITE_MARKERS: &[&str] = &[
     "launchagents",
     "launchdaemons",
     "/startup",
+    ".config/autostart",
+    ".git/hooks/",
+    "/currentversion/run",
 ];
 
 /// Normalizes path text for matching: backslashes become `/` and runs of
@@ -186,23 +282,31 @@ fn has_secret_dir(text: &str) -> bool {
 }
 
 /// Whether a shell command fetches with `curl` or `wget` and pipes the result
-/// into `sh` or `bash` (`curl -s u | sh`, `wget -qO- u|bash`).
+/// into a POSIX shell (`curl -s u | sh`, `wget -qO- u|bash`,
+/// `curl u | sudo -E /bin/bash -s --`). `||` is not a pipe.
 pub fn pipes_download_to_shell(cmd: &str) -> bool {
     let lower = cmd.to_ascii_lowercase();
     let Some(fetch) = ["curl", "wget"].iter().filter_map(|f| lower.find(f)).min() else {
         return false;
     };
-    lower[fetch..].match_indices('|').any(|(i, _)| {
-        let rest = lower[fetch + i + 1..].trim_start();
-        let rest = rest.strip_prefix("sudo ").map_or(rest, str::trim_start);
-        ["bash", "sh"].iter().any(|sh| {
-            rest.strip_prefix(sh).is_some_and(|after| {
-                after
-                    .bytes()
-                    .next()
-                    .is_none_or(|b| !(b.is_ascii_alphanumeric() || b == b'_'))
-            })
-        })
+    let text = &lower[fetch..];
+    let bytes = text.as_bytes();
+    text.match_indices('|').any(|(i, _)| {
+        let before = i.checked_sub(1).map(|j| bytes[j]);
+        let after = bytes.get(i + 1).copied();
+        if before == Some(b'|') || after == Some(b'|') {
+            return false;
+        }
+        let rest = &text[i + 1..];
+        let rest = rest.strip_prefix('&').unwrap_or(rest);
+        let stage = rest.split([';', '|', '&', ')', '\n']).next().unwrap_or("");
+        let words: Vec<&str> = stage
+            .split_whitespace()
+            .map(|w| w.trim_matches(|c| c == '"' || c == '\''))
+            .collect();
+        words
+            .get(program_index(&words))
+            .is_some_and(|p| is_posix_shell(p))
     })
 }
 
@@ -252,4 +356,54 @@ pub fn env_class(name: &str) -> Option<&'static str> {
 pub fn is_sensitive_write_path(text: &str) -> bool {
     let lower = normalize_path(text).to_ascii_lowercase();
     SENSITIVE_WRITE_MARKERS.iter().any(|m| lower.contains(m))
+}
+
+/// Markers of [`literal_source_class`] and [`is_sensitive_write_path`]
+/// that hold none of `/`, `\`, `.`, `_` or a space.
+const PLAIN_MARKERS: &[&str] = &[
+    "keystore",
+    "metamask",
+    "exodus",
+    "cookies",
+    "crontab",
+    "launchagents",
+    "launchdaemons",
+];
+
+/// Cheap test that text may hold a source or sensitive-write marker. False
+/// means neither [`literal_source_class`] nor [`is_sensitive_write_path`]
+/// can match it, so callers checking many words can skip them.
+pub fn may_name_path(text: &str) -> bool {
+    if text.contains(['/', '\\', '.', '_', ' ']) {
+        return true;
+    }
+    if text.len() < PLAIN_MARKERS.iter().map(|m| m.len()).min().unwrap_or(0) {
+        return false;
+    }
+    let lower = text.to_ascii_lowercase();
+    PLAIN_MARKERS.iter().any(|m| lower.contains(m))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_marker_passes_the_prefilter() {
+        let lists: [&[&str]; 7] = [
+            SECRET_DIRS,
+            SECRET_FILE_MARKERS,
+            BROWSER_STORE_NAMES,
+            WALLET_MARKERS_NOCASE,
+            KEYCHAIN_MARKERS,
+            SENSITIVE_WRITE_MARKERS,
+            &[".env", "Exodus"],
+        ];
+        for m in lists.iter().flat_map(|l| l.iter()) {
+            assert!(may_name_path(m), "{m}");
+            assert!(may_name_path(&m.to_ascii_uppercase()), "{m}");
+        }
+        assert!(!may_name_path("grep"));
+        assert!(!may_name_path("--silent"));
+    }
 }

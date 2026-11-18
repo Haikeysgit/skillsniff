@@ -76,30 +76,38 @@ fn lang_for_extension(ext: &str) -> Option<Lang> {
     })
 }
 
-/// True when the first line is a `bash` or `sh` shebang.
-fn has_shell_shebang(path: &Path) -> bool {
-    let Ok(file) = std::fs::File::open(path) else {
-        return false;
-    };
+/// Language named by an interpreter, as in a shebang line.
+fn lang_for_interpreter(name: &str) -> Option<Lang> {
+    let python = name
+        .strip_prefix("python")
+        .is_some_and(|v| v.chars().all(|c| c.is_ascii_digit() || c == '.'));
+    Some(match name {
+        "bash" | "sh" | "dash" => Lang::Bash,
+        "node" | "nodejs" | "deno" => Lang::JavaScript,
+        "pwsh" | "powershell" => Lang::PowerShell,
+        _ if python => Lang::Python,
+        _ => return None,
+    })
+}
+
+/// Language of the first line's shebang, if it names a supported
+/// interpreter: directly, or through `env` with its options (`-S`, `-i`)
+/// and `NAME=value` assignments skipped.
+fn shebang_lang(path: &Path) -> Option<Lang> {
+    let file = std::fs::File::open(path).ok()?;
     let mut buf = Vec::new();
-    if file.take(256).read_to_end(&mut buf).is_err() {
-        return false;
-    }
+    file.take(256).read_to_end(&mut buf).ok()?;
     let first = buf.split(|&b| b == b'\n').next().unwrap_or(&[]);
-    let Some(rest) = first.strip_prefix(b"#!") else {
-        return false;
-    };
+    let rest = first.strip_prefix(b"#!")?;
     let line = String::from_utf8_lossy(rest);
     let mut words = line.split_whitespace();
-    let Some(interp) = words.next() else {
-        return false;
-    };
-    let mut name = basename(interp);
+    let mut name = basename(words.next()?);
     if name == "env" {
-        // Skip `env` options such as `-S`.
-        name = words.find(|w| !w.starts_with('-')).map_or("", basename);
+        name = words
+            .find(|w| !w.starts_with('-') && !w.contains('='))
+            .map_or("", basename);
     }
-    matches!(name, "bash" | "sh")
+    lang_for_interpreter(name)
 }
 
 fn is_manifest(name: &str) -> bool {
@@ -143,10 +151,10 @@ fn classify_file(root: &Path, f: &FileEntry) -> FileRole {
     if is_config(&f.path) {
         return FileRole::Config;
     }
-    if has_shell_shebang(&root.join(&f.path)) {
-        return FileRole::Script(Lang::Bash);
+    match shebang_lang(&root.join(&f.path)) {
+        Some(lang) => FileRole::Script(lang),
+        None => FileRole::Asset,
     }
-    FileRole::Asset
 }
 
 impl Target for SkillTarget {

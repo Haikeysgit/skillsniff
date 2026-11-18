@@ -19,9 +19,9 @@ use super::common::{
     Bind, Call, Core, MAX_FOLD_NODES, MAX_NAME_SEGMENTS, TEXT_CHARS, last_segment, line, run_query,
 };
 use super::patterns::{
-    DOWNLOAD_EXEC, ENV_LAUNCHERS, EVAL, EXEC, NETWORK, REVERSE_SHELL, SENSITIVE_WRITE, SHELL_FLAGS,
-    SHELLS, UNKNOWN_PIECE, env_class, is_sensitive_write_path, literal_source_class,
-    normalize_path, pipes_download_to_shell,
+    DOWNLOAD_EXEC, EVAL, EXEC, NETWORK, REVERSE_SHELL, SENSITIVE_WRITE, SHELLS, UNKNOWN_PIECE,
+    env_class, is_posix_shell, is_sensitive_write_path, is_shell_flag, literal_source_class,
+    normalize_path, pipes_download_to_shell, program_index,
 };
 use super::taint::{Facts, Site};
 use super::{LangRules, clip};
@@ -1275,7 +1275,8 @@ impl<'t> Extract<'t> {
     }
 
     /// The program and argument words of `spawn(prog, [args])`-style calls,
-    /// with an `env` launcher dropped, when the program is a literal.
+    /// with launchers such as `env` or `sudo` and their options dropped, when
+    /// the program is a literal.
     fn argv(&self, c: &Call<'t>) -> Vec<String> {
         let Some(args) = c.args.filter(|a| a.kind() == "arguments") else {
             return Vec::new();
@@ -1293,18 +1294,15 @@ impl<'t> Extract<'t> {
                     .filter_map(|n| self.command_text(n)),
             );
         }
-        if ENV_LAUNCHERS.contains(&words[0].as_str()) {
-            words.remove(0);
-        }
+        let start = program_index(&words);
+        words.drain(..start);
         words
     }
 
     /// Whether the call starts a shell, as in `spawn("/bin/sh")` or
     /// `spawn("/usr/bin/env", ["bash", ...])`.
     fn spawns_shell(&self, c: &Call<'t>) -> bool {
-        self.argv(c)
-            .first()
-            .is_some_and(|p| SHELLS.contains(&p.as_str()))
+        self.argv(c).first().is_some_and(|p| is_shell_program(p))
     }
 
     /// Whether an options object passes `shell` (other than `false`).
@@ -1340,8 +1338,8 @@ impl<'t> Extract<'t> {
             self.command_text(first).into_iter().collect()
         } else {
             let words = self.argv(c);
-            let shell = words.first().is_some_and(|p| SHELLS.contains(&p.as_str()));
-            if shell && words.iter().any(|w| SHELL_FLAGS.contains(&w.as_str())) {
+            let shell = words.first().is_some_and(|p| is_shell_program(p));
+            if shell && words.iter().any(|w| is_shell_flag(w)) {
                 words
             } else {
                 Vec::new()
@@ -1474,4 +1472,9 @@ impl<'t> Extract<'t> {
         let sinks = self.call_sites(&sensitive);
         self.core.into_facts(sinks, assigns)
     }
+}
+
+/// Whether a program word names a shell (`/bin/sh`, `bash`, `cmd.exe`).
+fn is_shell_program(word: &str) -> bool {
+    SHELLS.contains(&word) || is_posix_shell(word)
 }

