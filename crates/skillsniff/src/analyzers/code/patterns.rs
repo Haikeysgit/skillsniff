@@ -229,6 +229,7 @@ const SENSITIVE_WRITE_MARKERS: &[&str] = &[
     ".config/autostart",
     ".git/hooks/",
     "/currentversion/run",
+    "powershell/profile.ps1",
 ];
 
 /// Normalizes path text for matching: backslashes become `/` and runs of
@@ -300,14 +301,161 @@ pub fn pipes_download_to_shell(cmd: &str) -> bool {
         let rest = &text[i + 1..];
         let rest = rest.strip_prefix('&').unwrap_or(rest);
         let stage = rest.split([';', '|', '&', ')', '\n']).next().unwrap_or("");
+        // A word ends where a redirection, an interpolation or an unknown
+        // piece starts: `sh>/dev/null`, `bash</dev/tty`, `sh{x}`, `sh` + x.
         let words: Vec<&str> = stage
             .split_whitespace()
-            .map(|w| w.trim_matches(|c| c == '"' || c == '\''))
+            .map(|w| {
+                let w = w.trim_matches(|c| c == '"' || c == '\'');
+                let end = w
+                    .find(['<', '>', '{', '$', '(', '`', UNKNOWN_PIECE])
+                    .unwrap_or(w.len());
+                w[..end].trim_matches(|c| c == '"' || c == '\'')
+            })
+            .filter(|w| !w.is_empty())
             .collect();
         words
             .get(program_index(&words))
             .is_some_and(|p| is_posix_shell(p))
     })
+}
+
+/// Whether command text fetches code and runs it, in PowerShell (`iwr u |
+/// iex`, `IEX (New-Object Net.WebClient).DownloadString(u)`) or a POSIX
+/// shell (`curl u | sh`).
+pub fn runs_fetched_code(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '.'))
+        .collect();
+    let runs = words
+        .iter()
+        .any(|w| matches!(*w, "iex" | "invoke-expression"));
+    let fetches = words.iter().any(|w| {
+        matches!(
+            *w,
+            "iwr" | "irm" | "invoke-webrequest" | "invoke-restmethod" | "curl" | "wget"
+        ) || w.contains("downloadstring")
+            || w.contains("downloaddata")
+    });
+    (runs && fetches) || pipes_download_to_shell(text)
+}
+
+/// Most decoded bytes of an encoded PowerShell command that are examined.
+const MAX_ENCODED_BYTES: usize = 64 * 1024;
+
+/// Text of a PowerShell `-EncodedCommand` payload: base64 of UTF-16LE.
+/// Decodes at most [`MAX_ENCODED_BYTES`]; `None` when it is not base64.
+pub fn decode_encoded_command(payload: &str) -> Option<String> {
+    let payload = payload.trim_matches(|c| c == '"' || c == '\'');
+    let mut bytes = Vec::new();
+    let (mut acc, mut bits) = (0u32, 0u32);
+    for c in payload.bytes() {
+        let v = match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            b'=' => break,
+            b' ' | b'\t' | b'\r' | b'\n' => continue,
+            _ => return None,
+        };
+        acc = (acc << 6) | u32::from(v);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push(((acc >> bits) & 0xff) as u8);
+            acc &= (1 << bits) - 1;
+            if bytes.len() >= MAX_ENCODED_BYTES {
+                break;
+            }
+        }
+    }
+    if bytes.len() < 2 {
+        return None;
+    }
+    let units: Vec<u16> = (0..bytes.len() / 2)
+        .map(|i| u16::from_le_bytes([bytes[2 * i], bytes[2 * i + 1]]))
+        .collect();
+    Some(String::from_utf16_lossy(&units))
+}
+
+/// PowerShell host parameters that take the next word as a value.
+const POWERSHELL_VALUE_PARAMS: &[&str] = &[
+    "executionpolicy",
+    "windowstyle",
+    "inputformat",
+    "outputformat",
+    "version",
+    "psconsolefile",
+    "configurationname",
+    "workingdirectory",
+    "settingsfile",
+];
+
+/// Class of running `powershell`, `pwsh` or `cmd` with `args`:
+/// - an encoded command (`-e`, `-ec`, `-enc`, any `-EncodedCommand`
+///   abbreviation) is `eval`, or `download_exec` when the decoded text
+///   fetches and runs code;
+/// - `-Command` text (`-c`, abbreviations, or powershell.exe's first
+///   positional word) and `cmd /c` text are `exec`, or `download_exec` when
+///   they fetch and run code;
+/// - `None` for other programs or no command.
+pub fn invocation_class(prog: &str, args: &[&str]) -> Option<&'static str> {
+    let prog = program_name(prog);
+    if prog == "cmd" {
+        let at = args.iter().position(|a| {
+            let a = a.to_ascii_lowercase();
+            a == "/c" || a == "/k"
+        })?;
+        let rest = &args[at + 1..];
+        if let Some(first) = rest.first()
+            && matches!(program_name(first).as_str(), "powershell" | "pwsh")
+        {
+            return invocation_class(first, &rest[1..]).or(Some(EXEC));
+        }
+        let fetches = runs_fetched_code(&rest.join(" "));
+        return Some(if fetches { DOWNLOAD_EXEC } else { EXEC });
+    }
+    if !matches!(prog.as_str(), "powershell" | "pwsh") {
+        return None;
+    }
+    let mut i = 0;
+    while let Some(arg) = args.get(i) {
+        let lower = arg.to_ascii_lowercase();
+        let Some(name) = lower
+            .strip_prefix("--")
+            .or_else(|| lower.strip_prefix('-'))
+            .map(|n| n.trim_end_matches(':'))
+        else {
+            // powershell.exe runs its first positional word as a command;
+            // pwsh runs it as a script file.
+            if prog != "powershell" {
+                return None;
+            }
+            let fetches = runs_fetched_code(&args[i..].join(" "));
+            return Some(if fetches { DOWNLOAD_EXEC } else { EXEC });
+        };
+        let encoded =
+            matches!(name, "e" | "ec") || (name.len() >= 2 && "encodedcommand".starts_with(name));
+        if encoded {
+            let decoded = args.get(i + 1).and_then(|p| decode_encoded_command(p));
+            let fetches = decoded.is_some_and(|t| runs_fetched_code(&t));
+            return Some(if fetches { DOWNLOAD_EXEC } else { EVAL });
+        }
+        if name == "c" || (name.len() >= 3 && "command".starts_with(name)) {
+            let fetches = runs_fetched_code(&args[i + 1..].join(" "));
+            return Some(if fetches { DOWNLOAD_EXEC } else { EXEC });
+        }
+        if name == "f" || (name.len() >= 2 && "file".starts_with(name)) {
+            return None;
+        }
+        let takes_value = matches!(name, "ex" | "ep" | "w" | "wd" | "if" | "of" | "v")
+            || (name.len() >= 3 && POWERSHELL_VALUE_PARAMS.iter().any(|p| p.starts_with(name)));
+        i += if takes_value { 2 } else { 1 };
+    }
+    None
 }
 
 /// Source class of a string literal (or folded path text), if any.

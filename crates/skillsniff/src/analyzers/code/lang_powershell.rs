@@ -16,8 +16,8 @@ use tree_sitter::{Language, Node, Tree, TreeCursor};
 use super::common::{Bind, Core, MAX_NAME_SEGMENTS, TEXT_CHARS, line};
 use super::patterns::{
     DOWNLOAD_EXEC, EVAL, EXEC, KEYCHAIN, NETWORK, REVERSE_SHELL, SECRET_ENV, SENSITIVE_WRITE,
-    UNKNOWN_PIECE, env_class, is_sensitive_write_path, is_shell_flag, literal_source_class,
-    pipes_download_to_shell, program_name,
+    UNKNOWN_PIECE, env_class, invocation_class, is_sensitive_write_path, is_shell_flag,
+    literal_source_class, program_name, runs_fetched_code,
 };
 use super::taint::{Facts, Site};
 use super::{LangRules, PARSE_BUDGET, clip};
@@ -131,6 +131,11 @@ fn canonical(name: &str) -> &str {
         .iter()
         .find(|(a, _)| *a == name)
         .map_or(name, |(_, full)| full)
+}
+
+/// [`canonical`] of an owned name.
+fn canonical_owned(name: &str) -> String {
+    canonical(name).to_string()
 }
 
 /// A command name as compared: no backtick escapes, module qualifier,
@@ -255,26 +260,6 @@ fn file_write_arg(name: &str) -> Option<usize> {
     }
 }
 
-/// Whether command text fetches code and runs it (`iwr u | iex`,
-/// `IEX (New-Object Net.WebClient).DownloadString(u)`, `curl u | sh`).
-fn runs_download(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    let words: Vec<&str> = lower
-        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '.'))
-        .collect();
-    let runs = words
-        .iter()
-        .any(|w| matches!(*w, "iex" | "invoke-expression"));
-    let fetches = words.iter().any(|w| {
-        matches!(
-            *w,
-            "iwr" | "irm" | "invoke-webrequest" | "invoke-restmethod" | "curl" | "wget"
-        ) || w.contains("downloadstring")
-            || w.contains("downloaddata")
-    });
-    (runs && fetches) || pipes_download_to_shell(text)
-}
-
 #[derive(Clone, Copy, Default)]
 struct Scope {
     /// Name bound to what the node reads from the pipeline.
@@ -287,6 +272,17 @@ struct Scope {
     in_literal: bool,
     /// Inside a loop body or condition.
     in_loop: bool,
+    /// End byte of the command whose arguments hold the node.
+    cmd_end: usize,
+}
+
+/// A sink named inside text the parser could not read: the command word
+/// runs on what follows it up to the end of the enclosing command.
+struct ErrSink<'t> {
+    node: Node<'t>,
+    class: &'static str,
+    range: (usize, usize),
+    line: u32,
 }
 
 /// A command seen in the tree.
@@ -330,6 +326,7 @@ struct Walk<'t> {
     spans: Vec<(usize, usize, &'static str)>,
     /// A `.Read(...)` call inside a loop.
     loop_read: bool,
+    err_sinks: Vec<ErrSink<'t>>,
     next_name: usize,
     cursor: Option<TreeCursor<'t>>,
 }
@@ -346,6 +343,7 @@ impl<'t> Walk<'t> {
             candidates: Vec::new(),
             spans: Vec::new(),
             loop_read: false,
+            err_sinks: Vec::new(),
             next_name: 0,
             cursor: None,
         }
@@ -697,6 +695,7 @@ impl<'t> Walk<'t> {
         };
         match node.kind() {
             "comment" => return,
+            "ERROR" => self.error_node(node, scope),
             "variable" | "braced_variable" => return self.variable(node, scope),
             "expandable_string_literal"
             | "expandable_here_string_literal"
@@ -781,6 +780,72 @@ impl<'t> Walk<'t> {
             self.core.add_sensitive(node);
             self.spans
                 .push((node.start_byte(), node.end_byte(), SENSITIVE_WRITE));
+        }
+    }
+
+    /// Source and sensitive-path checks over a node's text as written.
+    fn raw_literal(&mut self, node: Node<'t>, scope: Scope) {
+        let text = self.text(node);
+        if let Some(class) = literal_source_class(text) {
+            let shown = self.display(node);
+            let shown = match scope.cmd {
+                Some(c) => format!("{} {shown}", self.names[c]),
+                None => shown,
+            };
+            self.core.add_source(node, class, shown, None);
+            self.spans.push((node.start_byte(), node.end_byte(), class));
+        }
+        if is_sensitive_write_path(text) {
+            self.core.add_sensitive(node);
+            self.spans
+                .push((node.start_byte(), node.end_byte(), SENSITIVE_WRITE));
+        }
+    }
+
+    /// Text the parser could not read, often a whole following line that
+    /// error recovery swallowed. Its paths are checked as written; a sink
+    /// command word in it runs on what follows, up to the end of the
+    /// enclosing command; fetched code run in it is `download_exec`.
+    fn error_node(&mut self, node: Node<'t>, scope: Scope) {
+        self.raw_literal(node, scope);
+        let text = self.text(node);
+        let end = scope.cmd_end.max(node.end_byte());
+        let base = line(node);
+        let mut start = None;
+        for (i, c) in text.char_indices().chain([(text.len(), ' ')]) {
+            let sep = c.is_whitespace() || matches!(c, '(' | ')' | ';' | '|' | '{' | '}');
+            match (start, sep) {
+                (None, false) => start = Some(i),
+                (Some(s), true) => {
+                    start = None;
+                    let name = canonical_owned(&command_key(&text[s..i]));
+                    let class = if NETWORK_COMMANDS.contains(&name.as_str()) {
+                        NETWORK
+                    } else if name == "invoke-expression" {
+                        EVAL
+                    } else if name == "start-process" {
+                        EXEC
+                    } else {
+                        continue;
+                    };
+                    let newlines = text[..s].matches('\n').count();
+                    self.err_sinks.push(ErrSink {
+                        node,
+                        class,
+                        range: (node.start_byte() + s, end),
+                        line: base.saturating_add(u32::try_from(newlines).unwrap_or(u32::MAX)),
+                    });
+                }
+                _ => {}
+            }
+        }
+        if runs_fetched_code(text) {
+            self.err_sinks.push(ErrSink {
+                node,
+                class: DOWNLOAD_EXEC,
+                range: (node.start_byte(), node.end_byte()),
+                line: base,
+            });
         }
     }
 
@@ -977,6 +1042,7 @@ impl<'t> Walk<'t> {
             cmd: None,
             in_literal: false,
             in_loop: false,
+            cmd_end: 0,
         };
         for k in kids.into_iter().rev() {
             if k.id() != name.id() {
@@ -1028,6 +1094,13 @@ impl<'t> Walk<'t> {
         let call = self.core.calls.len() - 1;
         if let Some(el) = elements {
             self.element_calls(el, scope);
+            // An argument the parser could not fully read (`$HOME/x`,
+            // `$env:USERPROFILE\.aws\x`) is checked as written.
+            for k in self.core.children_upto(el, usize::MAX) {
+                if k.has_error() && self.unwrap(k).kind() != "ERROR" {
+                    self.raw_literal(k, scope);
+                }
+            }
             if let Some(r) = raw.as_deref().filter(|_| !dynamic) {
                 self.definitions(r, el, node, scope);
             }
@@ -1056,6 +1129,7 @@ impl<'t> Walk<'t> {
         let inner = Scope {
             cmd: shown.or(scope.cmd),
             in_literal: false,
+            cmd_end: node.end_byte(),
             ..scope
         };
         let start = stack.len();
@@ -1166,16 +1240,45 @@ impl<'t> Walk<'t> {
             .unwrap_or_default()
     }
 
-    fn command_verdict(&self, c: &Cmd<'t>) -> Verdict<'t> {
-        let mut v = Verdict::default();
-        let name = self.resolved(c);
-        if c.dynamic && name.is_none_or(|n| n.starts_with('$')) {
-            v.class = Some(if c.dot { EVAL } else { EXEC });
-            return v;
-        }
-        let Some(name) = name else {
-            return v;
+    /// Verdicts of a command, one per meaning its name may have: an alias
+    /// or a variable assigned several names keeps every meaning. A computed
+    /// program (`& $f`) stays `exec` (`eval` for `.`) as well; `&` on a
+    /// program the rules do not classify is `exec`.
+    fn command_verdicts(&self, c: &Cmd<'t>) -> Vec<Verdict<'t>> {
+        let meanings = match c.raw.as_deref() {
+            Some(raw) => self.core.resolutions(raw),
+            None => Vec::new(),
         };
+        let mut out: Vec<Verdict<'t>> = Vec::new();
+        for m in &meanings {
+            let name = canonical(m);
+            if name.starts_with('$') {
+                continue;
+            }
+            let v = self.verdict_for(c, name);
+            if v.class.is_some() || v.always_write || !v.writes.is_empty() {
+                out.push(v);
+            }
+        }
+        let fallback = if c.dynamic {
+            Some(if c.dot { EVAL } else { EXEC })
+        } else if c.amp && c.raw.is_some() && out.is_empty() {
+            Some(EXEC)
+        } else {
+            None
+        };
+        if let Some(class) = fallback {
+            out.push(Verdict {
+                class: Some(class),
+                ..Verdict::default()
+            });
+        }
+        out
+    }
+
+    /// Verdict of a command running `name` (resolved and canonical).
+    fn verdict_for(&self, c: &Cmd<'t>, name: &str) -> Verdict<'t> {
+        let mut v = Verdict::default();
         let (params, pos) = c.elements.map(|e| self.elements(e)).unwrap_or_default();
         let path =
             |names: &[&str], at: usize| param(&params, names).or_else(|| pos.get(at).copied());
@@ -1184,7 +1287,7 @@ impl<'t> Walk<'t> {
             "invoke-expression" => v.class = Some(EVAL),
             "start-process" => {
                 let text = self.element_texts(c).join(" ");
-                v.class = Some(if runs_download(&text) {
+                v.class = Some(if runs_fetched_code(&text) {
                     DOWNLOAD_EXEC
                 } else {
                     EXEC
@@ -1192,15 +1295,12 @@ impl<'t> Walk<'t> {
             }
             n if SHELL_PROGRAMS.contains(&n) => {
                 let texts = self.element_texts(c);
-                let runs = texts.iter().any(|t| {
-                    let flag = t.trim_end_matches(':');
-                    is_shell_flag(flag)
-                        || flag.strip_prefix('-').is_some_and(|f| {
-                            f.len() >= 2 && "encodedcommand".starts_with(&f.to_ascii_lowercase())
-                        })
-                });
-                if runs {
-                    let download = runs_download(&texts.join(" "));
+                let args: Vec<&str> = texts.iter().map(String::as_str).collect();
+                let runs = texts.iter().any(|t| is_shell_flag(t.trim_end_matches(':')));
+                if let Some(class) = invocation_class(n, &args) {
+                    v.class = Some(class);
+                } else if runs {
+                    let download = runs_fetched_code(&texts.join(" "));
                     v.class = Some(if download { DOWNLOAD_EXEC } else { EXEC });
                 }
             }
@@ -1220,9 +1320,6 @@ impl<'t> Walk<'t> {
                     .any(|t| t.eq_ignore_ascii_case("/create"));
             }
             _ => {}
-        }
-        if v.class.is_none() && v.writes.is_empty() && c.amp {
-            v.class = Some(EXEC);
         }
         v
     }
@@ -1397,7 +1494,9 @@ impl<'t> Walk<'t> {
         // (call index, command index for commands, verdict)
         let mut verdicts: Vec<(usize, Option<usize>, Verdict<'t>)> = Vec::new();
         for (j, c) in self.cmds.iter().enumerate() {
-            verdicts.push((c.call, Some(j), self.command_verdict(c)));
+            for v in self.command_verdicts(c) {
+                verdicts.push((c.call, Some(j), v));
+            }
         }
         for i in 0..self.core.calls.len() {
             if !cmd_calls.contains(&i) {
@@ -1405,18 +1504,38 @@ impl<'t> Walk<'t> {
             }
         }
 
+        // One verdict per call keeps the call's id (its token, which later
+        // code reads): a network one if any. Further meanings get new ids.
+        let mut primary: HashMap<usize, usize> = HashMap::new();
+        for (k, (i, _, v)) in verdicts.iter().enumerate() {
+            let replace = primary
+                .get(i)
+                .is_some_and(|p| verdicts[*p].2.class != Some(NETWORK) && v.class == Some(NETWORK));
+            if replace || !primary.contains_key(i) {
+                primary.insert(*i, k);
+            }
+        }
+        let mut ids = Vec::with_capacity(verdicts.len());
+        for (k, (i, _, _)) in verdicts.iter().enumerate() {
+            ids.push(if primary.get(i) == Some(&k) {
+                self.core.calls[*i].id.clone()
+            } else {
+                self.core.fresh_id('v')
+            });
+        }
         self.core.index_tokens();
         let network: Vec<String> = verdicts
             .iter()
-            .filter(|(_, _, v)| v.class == Some(NETWORK))
-            .map(|(i, _, _)| self.core.calls[*i].id.clone())
+            .zip(&ids)
+            .filter(|((_, _, v), _)| v.class == Some(NETWORK))
+            .map(|(_, id)| id.clone())
             .collect();
         self.core.set_interesting(network);
         let assigns = self.core.assigns();
         let sensitive = self.core.sensitive_reach(&assigns);
 
         let mut sinks = Vec::new();
-        for (i, cmd, v) in &verdicts {
+        for ((i, cmd, v), id) in verdicts.iter().zip(&ids) {
             let class = match v.class {
                 Some(class) => class,
                 None if v.always_write || v.writes.iter().any(|w| self.touches(*w, &sensitive)) => {
@@ -1426,10 +1545,15 @@ impl<'t> Walk<'t> {
             };
             let call = &self.core.calls[*i];
             let site = match cmd.map(|j| &self.cmds[j]) {
-                Some(c) => self.site(call.id.clone(), class, c.node, c.node, c.input),
+                Some(c) => {
+                    // A command's own output is not its input.
+                    let mut site = self.site(id.clone(), class, c.node, c.node, c.input);
+                    site.args_refs.retain(|r| *r != call.id);
+                    site
+                }
                 None => {
                     let refs_of = self.method_args.get(i).copied().unwrap_or(call.node);
-                    self.site(call.id.clone(), class, call.node, refs_of, None)
+                    self.site(id.clone(), class, call.node, refs_of, None)
                 }
             };
             self.core.push_sink(&mut sinks, || site);
@@ -1442,6 +1566,19 @@ impl<'t> Walk<'t> {
             let (shown, stmt, input) = (r.shown, r.stmt, r.input);
             let id = self.core.fresh_id('r');
             let site = self.site(id, SENSITIVE_WRITE, shown, stmt, input);
+            self.core.push_sink(&mut sinks, || site);
+        }
+        for i in 0..self.err_sinks.len() {
+            let e = &self.err_sinks[i];
+            let (node, class, range, line) = (e.node, e.class, e.range, e.line);
+            let id = self.core.fresh_id('r');
+            let site = Site {
+                id,
+                class: class.to_string(),
+                line,
+                args_refs: self.core.refs(&[range]),
+                text: self.display(node),
+            };
             self.core.push_sink(&mut sinks, || site);
         }
         if let (Some(node), true, true) = (tcp, stream, self.loop_read) {

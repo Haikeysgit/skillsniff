@@ -33,6 +33,10 @@ pub struct Facts {
     pub assigns: Vec<(String, Vec<String>, u32)>,
     /// Extraction ran out of time; the facts above are partial.
     pub budget_exceeded: bool,
+    /// For an `exec` or `eval` sink id, the references it runs as code. A
+    /// sink listed here becomes `download_exec` only when fetched data
+    /// reaches these; other sinks use all of their argument references.
+    pub code_refs: BTreeMap<String, Vec<String>>,
 }
 
 /// A source class reaching a sink class within one file.
@@ -179,9 +183,8 @@ pub fn mark_download_exec(facts: &mut Facts) -> bool {
         .collect::<HashMap<_, _>>();
     let (tainted, cut) = spread(&facts.assigns, seeds);
     for sink in &mut facts.sinks {
-        if (sink.class == EVAL || sink.class == EXEC)
-            && !reaching(&sink.args_refs, &tainted).is_empty()
-        {
+        let code = facts.code_refs.get(&sink.id).unwrap_or(&sink.args_refs);
+        if (sink.class == EVAL || sink.class == EXEC) && !reaching(code, &tainted).is_empty() {
             sink.class = DOWNLOAD_EXEC.to_string();
         }
     }

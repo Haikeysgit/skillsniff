@@ -9,7 +9,7 @@
 //! stages, input redirections, here-strings and here-documents, or the
 //! callers of the function it runs in.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::time::Instant;
 
 use tree_sitter::{Language, Node, Tree, TreeCursor};
@@ -17,14 +17,18 @@ use tree_sitter::{Language, Node, Tree, TreeCursor};
 use super::common::{Bind, Core, TEXT_CHARS, line};
 use super::patterns::{
     DOWNLOAD_EXEC, EVAL, EXEC, KEYCHAIN, NETWORK, REVERSE_SHELL, SECRET_ENV, SENSITIVE_WRITE,
-    UNKNOWN_PIECE, env_class, is_posix_shell, is_sensitive_write_path, is_shell_flag,
-    literal_source_class, may_name_path, pipes_download_to_shell, program_index, program_name,
+    UNKNOWN_PIECE, env_class, invocation_class, is_posix_shell, is_sensitive_write_path,
+    is_shell_flag, literal_source_class, may_name_path, pipes_download_to_shell, program_index,
+    program_name,
 };
 use super::taint::{Facts, Site};
 use super::{LangRules, PARSE_BUDGET, clip};
 
 /// Nodes visited between time checks.
 const CHECK_EVERY: usize = 4_096;
+
+/// Stands for `$IFS` in folded text: a word separator.
+const IFS_SEP: char = '\u{2}';
 
 /// Rules for Bash and POSIX shell scripts.
 pub struct BashRules;
@@ -55,13 +59,33 @@ struct Scope {
     cmd: Option<usize>,
     /// Inside a literal already classified as a whole.
     in_literal: bool,
+    /// A direct child of a command node.
+    in_cmd: bool,
 }
 
-/// A command seen in the tree.
+/// What an `exec` or `eval` sink runs as code.
+#[derive(Clone, Default)]
+enum Code<'t> {
+    /// Nothing fetched can become code here.
+    #[default]
+    None,
+    /// What the command reads on stdin.
+    Input,
+    /// Every argument (`eval`).
+    All,
+    /// These words.
+    Nodes(Vec<Node<'t>>),
+}
+
+/// A command seen in the tree, or one meaning of a command whose program
+/// is a variable.
 #[derive(Clone)]
 struct Cmd<'t> {
     node: Node<'t>,
+    /// Site id of the sink this command may become.
     id: String,
+    /// Id of the token covering the command, whose output later stages read.
+    token: String,
     /// The program word as written, after launchers such as `sudo`.
     word: Option<String>,
     /// Starts with `exec`: redirections then apply to the shell itself.
@@ -80,6 +104,11 @@ struct Cmd<'t> {
     shell_reader: bool,
     /// `nc`, `telnet`, `socat` and other raw socket tools.
     socket: bool,
+    /// What an `exec`/`eval` runs as code.
+    code: Code<'t>,
+    /// Arguments a network client reads to authenticate but does not send
+    /// (`ssh -i key`, `curl --cert file`).
+    exclude: Vec<Node<'t>>,
 }
 
 /// A command whose program is a variable (`$c args`).
@@ -107,10 +136,13 @@ struct Walk<'t> {
     core: Core<'t>,
     names: Vec<String>,
     cmds: Vec<Cmd<'t>>,
+    /// Further meanings of commands whose program is a variable.
+    extra: Vec<Cmd<'t>>,
     redirs: Vec<Redir<'t>>,
     pipes: Vec<Node<'t>>,
     funcs: HashSet<String>,
     dynamic: Vec<Dynamic<'t>>,
+    code_refs: BTreeMap<String, Vec<String>>,
     next_name: usize,
     cursor: Option<TreeCursor<'t>>,
 }
@@ -121,10 +153,12 @@ impl<'t> Walk<'t> {
             core: Core::new(src),
             names: Vec::new(),
             cmds: Vec::new(),
+            extra: Vec::new(),
             redirs: Vec::new(),
             pipes: Vec::new(),
             funcs: HashSet::new(),
             dynamic: Vec::new(),
+            code_refs: BTreeMap::new(),
             next_name: 0,
             cursor: None,
         }
@@ -175,34 +209,79 @@ impl<'t> Walk<'t> {
         clip(&words.join(" "), TEXT_CHARS)
     }
 
-    /// Text a word stands for: quotes removed, pieces joined, expansions
-    /// kept as written (`$HOME/.ssh`), substitutions as an unknown piece.
+    /// Text a word stands for: quotes and backslash escapes removed, ANSI-C
+    /// escapes decoded, pieces joined, expansions kept as written
+    /// (`$HOME/.ssh`), `$IFS` as [`IFS_SEP`], substitutions as an unknown
+    /// piece.
     fn fold(&self, node: Node<'t>) -> String {
-        if matches!(node.kind(), "word" | "number") {
-            return self.text(node).to_string();
+        match node.kind() {
+            "word" => return unescape_word(self.text(node)),
+            "number" => return self.text(node).to_string(),
+            _ => {}
         }
         let mut out = String::new();
         let mut stack = vec![node];
         while let Some(n) = stack.pop() {
             let text = self.text(n);
             match n.kind() {
-                "word" | "number" | "string_content" | "simple_expansion" | "expansion" => {
-                    out.push_str(text);
+                "word" => out.push_str(&unescape_word(text)),
+                "number" | "string_content" => out.push_str(text),
+                "simple_expansion" | "expansion" => {
+                    if matches!(text, "$IFS" | "${IFS}") {
+                        out.push(IFS_SEP);
+                    } else {
+                        out.push_str(text);
+                    }
                 }
                 "raw_string" => out.push_str(
                     text.strip_prefix('\'')
                         .and_then(|t| t.strip_suffix('\''))
                         .unwrap_or(text),
                 ),
-                "ansi_c_string" => out.push_str(
+                "ansi_c_string" => out.push_str(&decode_ansi_c(
                     text.strip_prefix("$'")
                         .and_then(|t| t.strip_suffix('\''))
                         .unwrap_or(text),
-                ),
+                )),
                 "string" | "translated_string" | "concatenation" | "command_name" => {
                     stack.extend(self.core.children_upto(n, usize::MAX).into_iter().rev());
                 }
                 _ => out.push(UNKNOWN_PIECE),
+            }
+        }
+        out
+    }
+
+    /// The words an argument stands for: split at `$IFS`, and an unquoted
+    /// brace list (`{a,b,c}`) expanded. tree-sitter-bash keeps the opening
+    /// brace of a list in command position out of the word, so a word right
+    /// after a `{` counts as opened.
+    fn split_word(&self, node: Node<'t>, folded: &str) -> Vec<String> {
+        let opened = node
+            .start_byte()
+            .checked_sub(1)
+            .and_then(|i| self.core.src.get(i))
+            == Some(&b'{');
+        let unquoted = matches!(node.kind(), "word" | "concatenation" | "command_name");
+        let mut out = Vec::new();
+        for (i, part) in folded.split(IFS_SEP).filter(|p| !p.is_empty()).enumerate() {
+            let inner = part
+                .strip_suffix('}')
+                .and_then(|p| p.strip_prefix('{').or((i == 0 && opened).then_some(p)));
+            match inner {
+                Some(list)
+                    if unquoted
+                        && list.contains(',')
+                        && !list.contains(['{', '}'])
+                        && !list.contains(char::is_whitespace) =>
+                {
+                    out.extend(
+                        list.split(',')
+                            .filter(|w| !w.is_empty())
+                            .map(str::to_string),
+                    );
+                }
+                _ => out.push(part.to_string()),
             }
         }
         out
@@ -214,7 +293,10 @@ impl<'t> Walk<'t> {
         let mut n = node;
         for _ in 0..4 {
             match n.kind() {
-                "simple_expansion" | "expansion" | "command_substitution" => return true,
+                "simple_expansion"
+                | "expansion"
+                | "command_substitution"
+                | "process_substitution" => return true,
                 "command_name" => match n.named_child(0) {
                     Some(c) => n = c,
                     None => return false,
@@ -297,6 +379,7 @@ impl<'t> Walk<'t> {
     fn visit(&mut self, node: Node<'t>, scope: Scope, stack: &mut Vec<(Node<'t>, Scope)>) {
         let mut inner = Scope {
             in_literal: false,
+            in_cmd: false,
             ..scope
         };
         match node.kind() {
@@ -323,6 +406,11 @@ impl<'t> Walk<'t> {
             }
             "for_statement" => self.for_loop(node, scope),
             "command" => return self.command(node, scope, stack),
+            // Error recovery can leave a command name outside a command.
+            "command_name" if !scope.in_cmd => {
+                return self.simple_command(node, Some(node), Vec::new(), &[], scope, stack);
+            }
+            "ERROR" if self.has_pipe_token(node) => return self.pipeline(node, scope, stack),
             "redirected_statement" => return self.redirected(node, scope, stack),
             "pipeline" => return self.pipeline(node, scope, stack),
             "function_definition" => return self.function(node, scope, stack),
@@ -371,7 +459,13 @@ impl<'t> Walk<'t> {
         let folded = self.fold(node);
         let text: String = folded
             .chars()
-            .map(|c| if matches!(c, '@' | '=') { ' ' } else { c })
+            .map(|c| {
+                if matches!(c, '@' | '=' | ',' | '{' | '}' | IFS_SEP) {
+                    ' '
+                } else {
+                    c
+                }
+            })
             .collect();
         if !may_name_path(&text) {
             return;
@@ -517,6 +611,7 @@ impl<'t> Walk<'t> {
             func: Some(func),
             cmd: None,
             in_literal: false,
+            in_cmd: false,
         };
         stack.push((body, inner));
         for c in self.core.children_upto(node, usize::MAX) {
@@ -729,6 +824,14 @@ fn classified(prog: &str) -> bool {
             | "eval"
             | "source"
             | "."
+            | "powershell"
+            | "pwsh"
+            | "cmd"
+            | "sudo"
+            | "doas"
+            | "env"
+            | "xargs"
+            | "nohup"
     ) || is_posix_shell(prog)
         || code_flags(prog).is_some()
 }
@@ -790,11 +893,52 @@ impl<'t> Walk<'t> {
                 }
             }
         }
-        let words: Vec<(Node<'t>, String)> = name
-            .into_iter()
-            .chain(args)
-            .map(|n| (n, self.fold(n)))
-            .collect();
+        self.simple_command(node, name, args, &redirects, scope, stack);
+    }
+
+    /// Whether a node has a `|` or `|&` token among its children: error
+    /// recovery can leave a pipeline without a pipeline node.
+    fn has_pipe_token(&mut self, node: Node<'t>) -> bool {
+        let cursor = self.cursor.get_or_insert_with(|| node.walk());
+        cursor.reset(node);
+        if !cursor.goto_first_child() {
+            return false;
+        }
+        loop {
+            if matches!(cursor.node().kind(), "|" | "|&") {
+                return true;
+            }
+            if !cursor.goto_next_sibling() {
+                return false;
+            }
+        }
+    }
+
+    /// A command given as its name and argument nodes. `node` is the
+    /// command, or a lone command name that error recovery left behind.
+    fn simple_command(
+        &mut self,
+        node: Node<'t>,
+        name: Option<Node<'t>>,
+        args: Vec<Node<'t>>,
+        redirects: &[Node<'t>],
+        scope: Scope,
+        stack: &mut Vec<(Node<'t>, Scope)>,
+    ) {
+        let mut words: Vec<(Node<'t>, String)> = Vec::new();
+        let mut name_split = false;
+        for (i, n) in name.into_iter().chain(args).enumerate() {
+            let folded = self.fold(n);
+            let parts = self.split_word(n, &folded);
+            if i == 0 && name.is_some() && parts.len() != 1 {
+                name_split = true;
+            }
+            if parts.is_empty() {
+                words.push((n, folded));
+            } else {
+                words.extend(parts.into_iter().map(|p| (n, p)));
+            }
+        }
         let texts: Vec<&str> = words.iter().map(|(_, t)| t.as_str()).collect();
         let mut idx = program_index(&texts);
         let mut stdin_args = false;
@@ -812,7 +956,7 @@ impl<'t> Walk<'t> {
         self.core.token(node, id.clone(), false);
 
         let mut own_input = false;
-        for r in &redirects {
+        for r in redirects {
             match r.kind() {
                 "herestring_redirect" => own_input = true,
                 "file_redirect" => {
@@ -824,10 +968,11 @@ impl<'t> Walk<'t> {
         }
         let mut cmd = Cmd {
             node,
-            id,
+            id: id.clone(),
+            token: id,
             word,
             exec,
-            class: dynamic.then_some(EXEC),
+            class: None,
             reads_input: stdin_args,
             input: scope.input,
             writes: Vec::new(),
@@ -835,7 +980,14 @@ impl<'t> Walk<'t> {
             fetch_pipe: false,
             shell_reader: false,
             socket: false,
+            code: Code::None,
+            exclude: Vec::new(),
         };
+        if dynamic && let Some((n, _)) = words.get(idx) {
+            // A computed program runs its own name: `$(curl …)`, `$X`.
+            cmd.class = Some(EXEC);
+            cmd.code = Code::Nodes(vec![*n]);
+        }
         let has_input = scope.input.is_some() || stdin_args || own_input;
         let rest = words.get(idx + 1..).unwrap_or_default();
         if let Some(p) = prog.as_deref() {
@@ -878,14 +1030,18 @@ impl<'t> Walk<'t> {
         let inner = Scope {
             cmd: shown.or(scope.cmd),
             in_literal: false,
+            in_cmd: true,
             ..scope
         };
         let start = stack.len();
         self.push_children(node, inner, stack);
-        if let Some(n) = name
-            && let Some(entry) = stack[start..].iter_mut().find(|(c, _)| c.id() == n.id())
-        {
-            entry.1.in_literal = true;
+        // The program word is not a path literal, unless it held several
+        // words (`{curl,-d,@file}`, `curl${IFS}-d…`).
+        for entry in &mut stack[start..] {
+            let whole_name = name.is_some_and(|n| n.id() == node.id());
+            if whole_name || name.is_some_and(|n| n.id() == entry.0.id()) {
+                entry.1.in_literal = !name_split;
+            }
         }
     }
 
@@ -905,10 +1061,12 @@ impl<'t> Walk<'t> {
                 cmd.class = Some(NETWORK);
                 cmd.reads_input |=
                     any(&|t| t.ends_with("@-") || t == "-" || t.contains("/dev/stdin"));
+                cmd.exclude = credential_options(prog, rest);
             }
             "wget" => {
                 cmd.class = Some(NETWORK);
                 cmd.reads_input |= any(&|t| t.ends_with("=-") || t.contains("/dev/stdin"));
+                cmd.exclude = credential_options(prog, rest);
             }
             "nc" | "ncat" | "netcat" | "socat" | "telnet" => {
                 let runs = match prog {
@@ -931,9 +1089,16 @@ impl<'t> Walk<'t> {
             "ssh" | "sftp" | "ftp" => {
                 cmd.class = Some(NETWORK);
                 cmd.reads_input = true;
+                cmd.exclude = credential_options(prog, rest);
             }
-            "scp" => cmd.class = Some(NETWORK),
-            "rsync" if any(&|t| !is_option(t) && t.contains(':')) => cmd.class = Some(NETWORK),
+            "scp" => {
+                cmd.class = Some(NETWORK);
+                cmd.exclude = credential_options(prog, rest);
+            }
+            "rsync" if any(&|t| !is_option(t) && t.contains(':')) => {
+                cmd.class = Some(NETWORK);
+                cmd.exclude = credential_options(prog, rest);
+            }
             "cp" | "mv" | "install" | "ln" | "rsync" => cmd.writes = copy_target(rest),
             "tee" => {
                 cmd.writes = operands(rest);
@@ -972,7 +1137,8 @@ impl<'t> Walk<'t> {
             }
             "eval" => {
                 cmd.class = Some(EVAL);
-                cmd.fetch_pipe = pipes_download_to_shell(&texts.join(" "));
+                cmd.code = Code::All;
+                cmd.fetch_pipe = pipes_download_to_shell(&spaced(&texts.join(" ")));
             }
             "source" | "." => {
                 if let Some((n, t)) = rest.first() {
@@ -980,7 +1146,17 @@ impl<'t> Walk<'t> {
                     if stdin || self.has_substitution(*n) {
                         cmd.class = Some(EVAL);
                         cmd.reads_input = stdin;
+                        cmd.code = if stdin {
+                            Code::Input
+                        } else {
+                            Code::Nodes(vec![*n])
+                        };
                     }
+                }
+            }
+            "powershell" | "pwsh" | "cmd" => {
+                if let Some(class) = invocation_class(prog, &texts) {
+                    cmd.class = Some(class);
                 }
             }
             "security"
@@ -1013,7 +1189,7 @@ impl<'t> Walk<'t> {
             _ if is_posix_shell(prog) => self.shell(cmd, rest, has_input),
             _ => {
                 if let Some(flags) = code_flags(prog) {
-                    interpreter(cmd, flags, &texts, has_input);
+                    self.interpreter(cmd, flags, rest, has_input);
                 }
             }
         }
@@ -1023,6 +1199,16 @@ impl<'t> Walk<'t> {
         let text = self.display(cmd.node);
         self.core
             .add_source(cmd.node, KEYCHAIN, text, Some(cmd.id.clone()));
+    }
+
+    /// Code word of `-c CODE`: only a word that is wholly an expansion or
+    /// substitution counts as fetched code; one interpolated into a larger
+    /// literal (`-c "print('$V')"`) does not.
+    fn code_word(&self, word: Option<&(Node<'t>, String)>) -> Code<'t> {
+        match word {
+            Some((n, _)) if self.is_dynamic(*n) => Code::Nodes(vec![*n]),
+            _ => Code::None,
+        }
     }
 
     /// A shell: `-c` runs its next word; with no script (or `-s`) it runs
@@ -1038,9 +1224,10 @@ impl<'t> Walk<'t> {
             }
             if is_shell_flag(t) {
                 cmd.class = Some(EXEC);
+                cmd.code = self.code_word(rest.get(i + 1));
                 cmd.fetch_pipe = rest
                     .get(i + 1)
-                    .is_some_and(|(_, code)| pipes_download_to_shell(code));
+                    .is_some_and(|(_, code)| pipes_download_to_shell(&spaced(code)));
                 return;
             }
             if is_option(t) || (t.len() > 1 && t.starts_with('+')) {
@@ -1061,6 +1248,7 @@ impl<'t> Walk<'t> {
             None | Some((_, "/dev/stdin" | "-")) => true,
             Some((n, _)) if self.has_substitution(n) => {
                 cmd.class = Some(EXEC);
+                cmd.code = Code::Nodes(vec![n]);
                 return;
             }
             Some(_) => stdin,
@@ -1070,7 +1258,33 @@ impl<'t> Walk<'t> {
             if has_input {
                 cmd.class = Some(EXEC);
                 cmd.reads_input = true;
+                cmd.code = Code::Input;
             }
+        }
+    }
+
+    /// An interpreter: a code flag runs its next word; with no script or
+    /// `-` it runs what it reads on stdin.
+    fn interpreter(
+        &self,
+        cmd: &mut Cmd<'t>,
+        flags: &[&str],
+        rest: &[(Node<'t>, String)],
+        has_input: bool,
+    ) {
+        if let Some(i) = rest.iter().position(|(_, t)| flags.contains(&t.as_str())) {
+            cmd.class = Some(EXEC);
+            cmd.code = self.code_word(rest.get(i + 1));
+            return;
+        }
+        if rest.iter().any(|(_, t)| t == "-m") {
+            return;
+        }
+        let script = rest.iter().find(|(_, t)| !is_option(t));
+        if script.is_none_or(|(_, t)| t == "-") && has_input {
+            cmd.class = Some(EXEC);
+            cmd.reads_input = true;
+            cmd.code = Code::Input;
         }
     }
 
@@ -1130,23 +1344,6 @@ impl<'t> Walk<'t> {
     }
 }
 
-/// An interpreter: a code flag runs its next word; with no script or `-`
-/// it runs what it reads on stdin.
-fn interpreter(cmd: &mut Cmd, flags: &[&str], texts: &[&str], has_input: bool) {
-    if texts.iter().any(|t| flags.contains(t)) {
-        cmd.class = Some(EXEC);
-        return;
-    }
-    if texts.contains(&"-m") {
-        return;
-    }
-    let script = texts.iter().find(|t| !is_option(t));
-    if matches!(script, None | Some(&"-")) && has_input {
-        cmd.class = Some(EXEC);
-        cmd.reads_input = true;
-    }
-}
-
 // ---- Second pass ----
 
 impl<'t> Walk<'t> {
@@ -1169,8 +1366,60 @@ impl<'t> Walk<'t> {
         }
     }
 
-    /// The command recorded for `node`. Commands are recorded in document
-    /// order, so their start bytes are sorted.
+    /// References inside `node` outside the `exclude` nodes.
+    fn refs_except(&self, node: Node, exclude: &[Node]) -> Vec<String> {
+        let mut cuts: Vec<(usize, usize)> = exclude
+            .iter()
+            .map(|n| (n.start_byte(), n.end_byte()))
+            .collect();
+        cuts.sort_unstable();
+        let mut ranges = Vec::new();
+        let mut at = node.start_byte();
+        for (s, e) in cuts {
+            if s > at {
+                ranges.push((at, s));
+            }
+            at = at.max(e);
+        }
+        if at < node.end_byte() {
+            ranges.push((at, node.end_byte()));
+        }
+        self.core.refs(&ranges)
+    }
+
+    /// The sink of a command meaning. Its own output is not its input.
+    fn cmd_site(&self, c: &Cmd<'t>, class: &str) -> Site {
+        let mut args_refs = if class == NETWORK && !c.exclude.is_empty() {
+            self.refs_except(c.node, &c.exclude)
+        } else {
+            self.core.node_refs(c.node)
+        };
+        args_refs.retain(|r| *r != c.token);
+        if c.reads_input {
+            args_refs.extend(self.input_names(c.input));
+        }
+        Site {
+            id: c.id.clone(),
+            class: class.to_string(),
+            line: line(c.node),
+            args_refs,
+            text: self.display(c.node),
+        }
+    }
+
+    /// References an `exec` or `eval` sink runs as code.
+    fn code_of(&self, c: &Cmd<'t>) -> Vec<String> {
+        let mut refs = match &c.code {
+            Code::None => Vec::new(),
+            Code::Input => self.input_names(c.input),
+            Code::All => self.core.node_refs(c.node),
+            Code::Nodes(nodes) => nodes.iter().flat_map(|n| self.core.node_refs(*n)).collect(),
+        };
+        refs.retain(|r| *r != c.token);
+        refs
+    }
+
+    /// The command recorded for `node`. Commands are sorted by start byte.
     fn cmd_at(&self, node: Node) -> Option<&Cmd<'t>> {
         let from = self
             .cmds
@@ -1182,10 +1431,17 @@ impl<'t> Walk<'t> {
     }
 
     /// Commands of a pipeline's stages in order, with nested pipelines (as
-    /// in `a | b 2>&1 | c`) flattened. Their ids go into `flat`.
+    /// in `a | b 2>&1 | c`) flattened. Their ids go into `flat`. `pipe` may
+    /// be an error node holding a pipeline's stages.
     fn stage_cmds(&self, pipe: Node<'t>, flat: &mut HashSet<usize>) -> Vec<Option<&Cmd<'t>>> {
         let mut out = Vec::new();
-        let mut stack = vec![pipe];
+        flat.insert(pipe.id());
+        let mut stack: Vec<Node<'t>> = self
+            .core
+            .children_upto(pipe, usize::MAX)
+            .into_iter()
+            .rev()
+            .collect();
         while let Some(n) = stack.pop() {
             match n.kind() {
                 "pipeline" => {
@@ -1193,7 +1449,7 @@ impl<'t> Walk<'t> {
                     stack.extend(self.core.children_upto(n, usize::MAX).into_iter().rev());
                 }
                 "redirected_statement" => stack.extend(n.child_by_field_name("body")),
-                "command" => out.push(self.cmd_at(n)),
+                "command" | "command_name" => out.push(self.cmd_at(n)),
                 _ => out.push(None),
             }
         }
@@ -1226,7 +1482,8 @@ impl<'t> Walk<'t> {
 
     fn sinks(&mut self, sensitive: &HashSet<String>) -> Vec<Site> {
         let mut out = Vec::new();
-        for c in &self.cmds {
+        let mut code_refs = BTreeMap::new();
+        for c in self.cmds.iter().chain(&self.extra) {
             let class = if c.fetch_pipe {
                 Some(DOWNLOAD_EXEC)
             } else if c.class.is_some() {
@@ -1237,10 +1494,13 @@ impl<'t> Walk<'t> {
                 None
             };
             let Some(class) = class else { continue };
-            let input = c.input.filter(|_| c.reads_input);
-            let site = self.site(c.id.clone(), class, c.node, c.node, input);
+            let site = self.cmd_site(c, class);
+            if matches!(class, EXEC | EVAL) {
+                code_refs.insert(site.id.clone(), self.code_of(c));
+            }
             self.core.push_sink(&mut out, || site);
         }
+        self.code_refs = code_refs;
         for i in 0..self.redirs.len() {
             if let Some(site) = self.redirect_sink(i, sensitive) {
                 self.core.push_sink(&mut out, || site);
@@ -1268,35 +1528,72 @@ impl<'t> Walk<'t> {
         out
     }
 
-    /// Second pass: calls of functions defined in the file, references and
-    /// the final facts.
-    /// Classifies `$c args` as each program `c` was assigned, keeping the
-    /// first meaning the rules classify; unresolved ones stay `exec`.
+    /// Classifies `$c args` as every program `c` was assigned. The command
+    /// stays an `exec` of a computed program, and each meaning the rules
+    /// classify adds its own sink. A wrapper meaning (`sudo`, `env`,
+    /// `xargs`) is classified as the program it runs.
     fn resolve_dynamic(&mut self) {
         for d in std::mem::take(&mut self.dynamic) {
             let local = format!("${}", d.var);
+            let mut network_seen = false;
             for meaning in self.core.resolutions(&local) {
                 if meaning == local {
                     continue;
                 }
+                let mut texts: Vec<&str> = vec![meaning.as_str()];
+                texts.extend(d.rest.iter().map(|(_, t)| t.as_str()));
+                let mut idx = program_index(&texts);
+                let mut stdin_args = false;
+                if texts.get(idx).is_some_and(|t| program_name(t) == "xargs") {
+                    idx = skip_xargs(&texts, idx + 1);
+                    idx += program_index(&texts[idx..]);
+                    stdin_args = true;
+                }
+                let Some(prog) = texts.get(idx).map(|t| program_name(t)) else {
+                    continue;
+                };
+                // The program after a wrapper is word `idx - 1` of the rest.
+                let computed = idx
+                    .checked_sub(1)
+                    .and_then(|i| d.rest.get(i))
+                    .is_some_and(|(n, _)| self.is_dynamic(*n));
+                if computed {
+                    continue;
+                }
+                let rest = d.rest.get(idx..).unwrap_or_default();
+                let base = &self.cmds[d.cmd];
                 let mut probe = Cmd {
+                    id: String::new(),
                     class: None,
+                    reads_input: base.reads_input || stdin_args,
                     writes: Vec::new(),
                     always_write: false,
                     fetch_pipe: false,
                     shell_reader: false,
                     socket: false,
-                    ..self.cmds[d.cmd].clone()
+                    code: Code::None,
+                    exclude: Vec::new(),
+                    ..base.clone()
                 };
-                self.classify(&mut probe, &meaning, &d.rest, d.has_input);
-                if probe.class.is_some() || probe.always_write || !probe.writes.is_empty() {
-                    self.cmds[d.cmd] = probe;
-                    break;
+                probe.id = self.core.fresh_id('c');
+                self.classify(&mut probe, &prog, rest, d.has_input || stdin_args);
+                if probe.class.is_none() && !probe.always_write && probe.writes.is_empty() {
+                    continue;
                 }
+                // Later stages read the command's output through its token:
+                // a network meaning takes the token's id.
+                if probe.class == Some(NETWORK) && !network_seen {
+                    network_seen = true;
+                    probe.id = probe.token.clone();
+                    self.cmds[d.cmd].id = self.core.fresh_id('c');
+                }
+                self.extra.push(probe);
             }
         }
     }
 
+    /// Second pass: calls of functions defined in the file, references and
+    /// the final facts.
     fn finish(mut self) -> Facts {
         self.resolve_dynamic();
         self.cmds.sort_by_key(|c| c.node.start_byte());
@@ -1320,6 +1617,7 @@ impl<'t> Walk<'t> {
         let network: Vec<String> = self
             .cmds
             .iter()
+            .chain(&self.extra)
             .filter(|c| c.class == Some(NETWORK))
             .map(|c| c.id.clone())
             .collect();
@@ -1327,6 +1625,163 @@ impl<'t> Walk<'t> {
         let assigns = self.core.assigns();
         let sensitive = self.core.sensitive_reach(&assigns);
         let sinks = self.sinks(&sensitive);
-        self.core.into_facts(sinks, assigns)
+        let mut facts = self.core.into_facts(sinks, assigns);
+        facts.code_refs = self.code_refs;
+        facts
     }
+}
+
+/// Backslash escapes of an unquoted word removed (`cu\rl` is `curl`).
+fn unescape_word(text: &str) -> String {
+    if !text.contains('\\') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+        } else if let Some(next) = chars.next().filter(|n| *n != '\n') {
+            out.push(next);
+        }
+    }
+    out
+}
+
+/// Text of an ANSI-C quoted string (`$'…'`) with its escapes decoded.
+fn decode_ansi_c(text: &str) -> String {
+    let b = text.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    // Up to `max` digits of `radix` from position `i`.
+    let digits = |i: usize, max: usize, radix: u32| -> (u32, usize) {
+        let mut value = 0u32;
+        let mut n = 0;
+        while n < max {
+            match b.get(i + n).and_then(|c| char::from(*c).to_digit(radix)) {
+                Some(d) => value = value * radix + d,
+                None => break,
+            }
+            n += 1;
+        }
+        (value, n)
+    };
+    while i < b.len() {
+        if b[i] != b'\\' || i + 1 >= b.len() {
+            out.push(b[i]);
+            i += 1;
+            continue;
+        }
+        let c = b[i + 1];
+        i += 2;
+        let simple = match c {
+            b'n' => Some(b'\n'),
+            b't' => Some(b'\t'),
+            b'r' => Some(b'\r'),
+            b'a' => Some(7),
+            b'b' => Some(8),
+            b'e' | b'E' => Some(27),
+            b'f' => Some(12),
+            b'v' => Some(11),
+            b'\\' | b'\'' | b'"' | b'?' => Some(c),
+            _ => None,
+        };
+        if let Some(byte) = simple {
+            out.push(byte);
+            continue;
+        }
+        let (value, used, unicode) = match c {
+            b'x' => {
+                let (v, n) = digits(i, 2, 16);
+                (v, n, false)
+            }
+            b'u' => {
+                let (v, n) = digits(i, 4, 16);
+                (v, n, true)
+            }
+            b'U' => {
+                let (v, n) = digits(i, 8, 16);
+                (v, n, true)
+            }
+            b'0'..=b'7' => {
+                let (v, n) = digits(i - 1, 3, 8);
+                (v, n.saturating_sub(1), false)
+            }
+            b'c' if i < b.len() => {
+                out.push(b[i] & 0x1f);
+                i += 1;
+                continue;
+            }
+            _ => {
+                out.extend([b'\\', c]);
+                continue;
+            }
+        };
+        if used == 0 && matches!(c, b'x' | b'u' | b'U') {
+            out.extend([b'\\', c]);
+            continue;
+        }
+        i += used;
+        if unicode {
+            let ch = char::from_u32(value).unwrap_or(char::REPLACEMENT_CHARACTER);
+            out.extend(ch.to_string().as_bytes());
+        } else {
+            out.push((value & 0xff) as u8);
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Text with `$IFS` separators as spaces, for command-text checks.
+fn spaced(text: &str) -> String {
+    text.replace(IFS_SEP, " ")
+}
+
+/// Arguments of a network client that name the key, certificate or netrc
+/// file it authenticates with: read locally, not sent. A value shared with
+/// other words (after `$IFS` or brace splitting) is kept.
+fn credential_options<'t>(prog: &str, rest: &[(Node<'t>, String)]) -> Vec<Node<'t>> {
+    let with_value: &[&str] = match prog {
+        "ssh" | "scp" | "sftp" => &["-i", "-F"],
+        "rsync" => &["-e", "--rsh"],
+        "curl" => &[
+            "--netrc-file",
+            "--cacert",
+            "--capath",
+            "--cert",
+            "--key",
+            "-E",
+            "--proxy-cacert",
+            "--proxy-cert",
+            "--proxy-key",
+        ],
+        "wget" => &["--certificate", "--private-key", "--ca-certificate"],
+        _ => return Vec::new(),
+    };
+    let ssh = matches!(prog, "ssh" | "scp" | "sftp");
+    let identity = |v: &str| {
+        let v = v.to_ascii_lowercase();
+        v.starts_with("identityfile") || v.starts_with("certificatefile")
+    };
+    let mut picked = Vec::new();
+    let mut i = 0;
+    while let Some((n, t)) = rest.get(i) {
+        let value = rest.get(i + 1);
+        if with_value.contains(&t.as_str())
+            || (ssh && t == "-o" && value.is_some_and(|v| identity(&v.1)))
+        {
+            picked.extend(value.map(|(v, _)| *v));
+            i += 2;
+            continue;
+        }
+        let attached = with_value.iter().any(|o| {
+            t.len() > o.len() && t.starts_with(o) && (o.len() == 2 || t.as_bytes()[o.len()] == b'=')
+        });
+        if attached || (ssh && t.strip_prefix("-o").is_some_and(identity)) {
+            picked.push(*n);
+        }
+        i += 1;
+    }
+    picked.retain(|p| rest.iter().filter(|(n, _)| n.id() == p.id()).count() == 1);
+    picked
 }

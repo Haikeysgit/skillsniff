@@ -198,6 +198,7 @@ fn pattern_list_is_complete() {
             "parse_budget_exceeded",
             "invisible_joiner",
             "invalid_utf8_script",
+            "parse_errors",
         ]
     );
 }

@@ -134,6 +134,28 @@ fn read_script(ctx: &ScanContext, path: &str) -> Option<(String, bool)> {
     })
 }
 
+/// Line of the first syntax error or missing token in a tree, if any.
+fn first_error_line(tree: &Tree) -> Option<u32> {
+    let mut node = tree.root_node();
+    if !node.has_error() {
+        return None;
+    }
+    let mut cursor = node.walk();
+    'down: loop {
+        if node.is_error() || node.is_missing() {
+            break;
+        }
+        for child in node.children(&mut cursor) {
+            if child.is_error() || child.is_missing() || child.has_error() {
+                node = child;
+                continue 'down;
+            }
+        }
+        break;
+    }
+    Some(u32::try_from(node.start_position().row + 1).unwrap_or(u32::MAX))
+}
+
 fn at(file: &str, line: u32) -> Location {
     Location {
         file: file.to_string(),
@@ -241,6 +263,14 @@ impl CodeAnalyzer {
                     };
                 }
             };
+            if let Some(line) = first_error_line(&tree) {
+                signals.push(signal(
+                    HIDDEN,
+                    &[("pattern", "parse_errors")],
+                    vec![at(path, line)],
+                    &format!("script does not parse from line {line}; code there may be misread"),
+                ));
+            }
             let mut facts = rules.facts(&tree, &src);
             let mut partial = facts.budget_exceeded;
             partial |= mark_download_exec(&mut facts);

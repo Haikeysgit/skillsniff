@@ -614,6 +614,7 @@ impl<'t> Core<'t> {
             sinks,
             assigns,
             budget_exceeded: self.truncated.get(),
+            code_refs: Default::default(),
         }
     }
 }

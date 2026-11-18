@@ -24,6 +24,7 @@ pub const HIDDEN_PATTERNS: &[&str] = &[
     "parse_budget_exceeded",
     "invisible_joiner",
     "invalid_utf8_script",
+    "parse_errors",
 ];
 
 /// Files larger than this are flagged `oversized_file`.

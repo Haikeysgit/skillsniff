@@ -82,7 +82,7 @@ fn lang_for_interpreter(name: &str) -> Option<Lang> {
         .strip_prefix("python")
         .is_some_and(|v| v.chars().all(|c| c.is_ascii_digit() || c == '.'));
     Some(match name {
-        "bash" | "sh" | "dash" => Lang::Bash,
+        "bash" | "sh" | "dash" | "zsh" | "ksh" => Lang::Bash,
         "node" | "nodejs" | "deno" => Lang::JavaScript,
         "pwsh" | "powershell" => Lang::PowerShell,
         _ if python => Lang::Python,
@@ -91,8 +91,8 @@ fn lang_for_interpreter(name: &str) -> Option<Lang> {
 }
 
 /// Language of the first line's shebang, if it names a supported
-/// interpreter: directly, or through `env` with its options (`-S`, `-i`)
-/// and `NAME=value` assignments skipped.
+/// interpreter: directly, or through `env` with its options (`-S`, `-i`,
+/// `-u NAME`, `-Sprog`) and `NAME=value` assignments skipped.
 fn shebang_lang(path: &Path) -> Option<Lang> {
     let file = std::fs::File::open(path).ok()?;
     let mut buf = Vec::new();
@@ -103,9 +103,19 @@ fn shebang_lang(path: &Path) -> Option<Lang> {
     let mut words = line.split_whitespace();
     let mut name = basename(words.next()?);
     if name == "env" {
-        name = words
-            .find(|w| !w.starts_with('-') && !w.contains('='))
-            .map_or("", basename);
+        name = "";
+        while let Some(w) = words.next() {
+            if matches!(w, "-u" | "--unset" | "-C" | "--chdir") {
+                words.next();
+                continue;
+            }
+            // `-Sprog args`: the split string starts right after `-S`.
+            let w = w.strip_prefix("-S").filter(|r| !r.is_empty()).unwrap_or(w);
+            if !w.starts_with('-') && !w.contains('=') {
+                name = basename(w);
+                break;
+            }
+        }
     }
     lang_for_interpreter(name)
 }
