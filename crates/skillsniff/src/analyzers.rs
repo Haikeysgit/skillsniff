@@ -1,5 +1,6 @@
 //! Analyzer interface and the parallel, isolated runner.
 
+pub mod agent_config;
 pub mod code;
 pub mod hidden;
 pub mod instructions;
