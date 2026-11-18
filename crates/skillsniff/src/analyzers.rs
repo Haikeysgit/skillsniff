@@ -1,5 +1,6 @@
 //! Analyzer interface and the parallel, isolated runner.
 
+pub mod code;
 pub mod hidden;
 
 use std::collections::BTreeMap;
