@@ -1,0 +1,18 @@
+---
+source: crates/skillsniff-cli/tests/output.rs
+expression: "render_report(&report_for(\"malicious/exfil-aws\"), &plain(100))"
+---
+ ╭──────────────────────────────────────────────────────────────╮
+ │  BLOCK   1 critical · 1 medium · 1 low                       │
+ │  Checked tree 3f2a9c1  do not install                        │
+ │  tests/fixtures/malicious/exfil-aws                          │
+ ╰──────────────────────────────────────────────────────────────╯
+
+   CRITICAL  Sends sensitive data over the network
+             scripts/sync.py:6, scripts/sync.py:13 · exfil.secret-to-network
+   MEDIUM    Reads a credential file
+             scripts/sync.py:6 · access.secret-file
+   LOW       Makes a network request
+             scripts/sync.py:13 · network.outbound
+
+   Coverage  ✔ Instructions  ✔ Code + dataflow  ✔ Hidden content  ✔ Agent config

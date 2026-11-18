@@ -97,8 +97,13 @@ fn sanitize_escapes_bidi_and_caps_length() {
     assert_eq!(sanitize_evidence("a\u{202E}b"), "a\\u{202E}b");
     let long = "x".repeat(500);
     let out = sanitize_evidence(&long);
-    assert_eq!(out.chars().count(), 201);
+    assert_eq!(out.chars().count(), 200);
     assert!(out.ends_with('…'));
+    let esc = "\u{202E}".repeat(100);
+    let out = sanitize_evidence(&esc);
+    assert!(out.chars().count() <= 200);
+    assert!(out.ends_with('…'));
+    assert!(out.trim_end_matches('…').ends_with('}'));
 }
 
 #[test]

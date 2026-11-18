@@ -175,25 +175,35 @@ fn needs_escape(c: char) -> bool {
         )
 }
 
-/// Escapes control, zero-width and bidi characters as `\u{XXXX}` and caps the
-/// result at 200 characters, appending `…` when truncated.
+/// Escapes control, zero-width and bidi characters as `{XXXX}` and caps the
+/// result at 200 characters in total; when truncated the last character is `…`
+/// and an escape is never cut in half.
 pub fn sanitize_evidence(s: &str) -> String {
+    let pieces: Vec<String> = s
+        .chars()
+        .map(|c| {
+            if needs_escape(c) {
+                format!("\\u{{{:04X}}}", c as u32)
+            } else {
+                c.to_string()
+            }
+        })
+        .collect();
+    let total: usize = pieces.iter().map(|p| p.chars().count()).sum();
+    if total <= EVIDENCE_MAX_CHARS {
+        return pieces.concat();
+    }
     let mut out = String::new();
     let mut count = 0usize;
-    for c in s.chars() {
-        let piece = if needs_escape(c) {
-            format!("\\u{{{:04X}}}", c as u32)
-        } else {
-            c.to_string()
-        };
+    for piece in &pieces {
         let len = piece.chars().count();
-        if count + len > EVIDENCE_MAX_CHARS {
-            out.push('…');
-            return out;
+        if count + len > EVIDENCE_MAX_CHARS - 1 {
+            break;
         }
-        out.push_str(&piece);
+        out.push_str(piece);
         count += len;
     }
+    out.push('…');
     out
 }
 

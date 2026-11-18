@@ -1,0 +1,411 @@
+# Phase 1 rule pack. A rule matches a signal of kind `signal` when every
+# `where` entry equals the signal field of the same name (`a|b` lists
+# alternatives). When several rules match one signal, the one with the most
+# `where` entries wins, then the higher severity.
+version: "2026.11.1"
+rules:
+  # ---- Files that are not plain files -----------------------------------
+  - id: inventory.symlink
+    severity: high
+    title: Symbolic link in the skill
+    signal: Inventory
+    where: {pattern: "symlink"}
+    explain: The source contains a symbolic link. Links can point outside the skill so that a later read or copy touches files that are not part of it. The link was not followed or extracted.
+    advice: Replace the link with the real file, or remove it, before using the skill.
+  - id: inventory.hardlink
+    severity: high
+    title: Hard link in the skill
+    signal: Inventory
+    where: {pattern: "hardlink"}
+    explain: The source contains a hard link. A hard link can make a path inside the skill refer to a file elsewhere on disk. The link was not extracted.
+    advice: Replace the link with a normal file copy, or remove it.
+  - id: inventory.case-collision
+    severity: high
+    title: Paths that differ only in letter case
+    signal: Inventory
+    where: {pattern: "case_collision"}
+    explain: Two entries differ only in letter case. On case-insensitive file systems one overwrites the other, so the content that runs can differ from the content that was reviewed.
+    advice: Rename or remove one of the colliding files.
+
+  # ---- Instructions -----------------------------------------------------
+  - id: instructions.prompt-injection
+    severity: high
+    title: Text that tries to override the agent instructions
+    signal: Instruction
+    where: {pattern: "prompt_injection"}
+    explain: The text tells the agent to ignore, replace or forget its earlier instructions or safety rules. Skills have no reason to do this.
+    advice: Remove the passage. Do not install the skill unless its author explains it.
+  - id: instructions.permission-bypass
+    severity: high
+    title: Asks the agent to skip permission prompts
+    signal: Instruction
+    where: {pattern: "permission_bypass"}
+    explain: The text asks the agent to act without confirmation, skip approval steps or disable safety checks.
+    advice: Remove the passage. Approval prompts should stay under the user control.
+  - id: instructions.remote-instructions
+    severity: high
+    title: Loads instructions from a remote address
+    signal: Instruction
+    where: {pattern: "remote_instructions"}
+    explain: The text tells the agent to fetch and follow instructions from a URL. The content behind the address can change after review.
+    advice: Inline the instructions in the skill, or drop the remote reference.
+  - id: instructions.reviewer-directed
+    severity: high
+    title: Text addressed to a reviewer or scanner
+    signal: Instruction
+    where: {pattern: "reviewer_directed"}
+    explain: The text speaks to whoever reviews or scans the skill, for example to say it is fine or to skip a check. Legitimate skills are written for the agent and the user.
+    advice: Treat the skill with suspicion and read it in full before use.
+  - id: instructions.secret-request
+    severity: high
+    title: Asks for secrets or credentials
+    signal: Instruction
+    where: {pattern: "secret_request"}
+    explain: The text asks the agent or the user to provide keys, tokens, passwords or other credentials.
+    advice: Do not supply credentials to a skill. Remove the request or find out why it is needed.
+  - id: instructions.hidden-comment
+    severity: medium
+    title: Long hidden comment
+    signal: Instruction
+    where: {pattern: "hidden_comment"}
+    explain: A long comment is invisible when the file is rendered but is still read by an agent that loads the raw text.
+    advice: Read the comment, and remove it unless it is needed.
+  - id: instructions.broad-trigger
+    severity: medium
+    title: Description that triggers on almost any request
+    signal: Instruction
+    where: {pattern: "broad_trigger"}
+    explain: The skill description is written so the agent may load the skill for nearly every task, which widens its influence.
+    advice: Narrow the description to the tasks the skill is meant for.
+
+  # ---- Hidden or disguised content --------------------------------------
+  - id: hidden.zero-width
+    severity: medium
+    title: Zero-width characters
+    signal: Hidden
+    where: {pattern: "zero_width"}
+    explain: The file contains characters that render as nothing. They can hide text, split keywords to evade filters or smuggle data.
+    advice: Remove the characters, or confirm there is a legitimate reason for them.
+  - id: hidden.bidi-control
+    severity: high
+    title: Text direction control characters
+    signal: Hidden
+    where: {pattern: "bidi_control"}
+    explain: Bidirectional control characters can reorder displayed text so that what a reviewer sees differs from what is read or run.
+    advice: Remove the control characters.
+  - id: hidden.tag-chars
+    severity: high
+    title: Unicode tag characters
+    signal: Hidden
+    where: {pattern: "tag_chars"}
+    explain: Unicode tag characters are invisible and can carry a whole hidden message that some models read.
+    advice: Remove the characters and read what they encoded.
+  - id: hidden.invisible-joiner
+    severity: medium
+    title: Invisible formatting characters
+    signal: Hidden
+    where: {pattern: "invisible_joiner"}
+    explain: The file contains invisible joiners, variation selectors or similar marks that change nothing on screen but can split or disguise words.
+    advice: Remove the characters unless the text needs them.
+  - id: hidden.mixed-script
+    severity: medium
+    title: Latin letters mixed with look-alike letters
+    signal: Hidden
+    where: {pattern: "mixed_script"}
+    explain: A word or host name mixes Latin letters with Cyrillic or Greek letters that look the same. This is used to fake names and addresses.
+    advice: Check the spelling character by character and replace look-alikes.
+  - id: hidden.high-entropy
+    severity: medium
+    title: Encoded or random-looking blob
+    signal: Hidden
+    where: {pattern: "high_entropy"}
+    explain: A long random-looking string is present. It may be an encoded payload, a key or compressed data.
+    advice: Decode or identify the string before using the skill.
+  - id: hidden.high-entropy-hash
+    severity: low
+    title: Hash-like hex string
+    signal: Hidden
+    where: {pattern: "high_entropy", alphabet: "hex", len: "40|64"}
+    explain: A hex string of 40 or 64 characters is present. It is most likely a SHA-1 or SHA-256 checksum.
+    advice: No action needed if it is a checksum.
+  - id: hidden.binary-file
+    severity: medium
+    title: Binary file
+    signal: Hidden
+    where: {pattern: "binary_file"}
+    explain: The skill ships a binary file that cannot be read as text and was not analyzed.
+    advice: Remove it, or obtain it from a source you trust and check its hash.
+  - id: hidden.binary-asset
+    severity: low
+    title: Image or font file
+    signal: Hidden
+    where: {pattern: "binary_file", magic: "image|font"}
+    explain: The skill ships an image or font whose first bytes match that format. These are common, but their content was not analyzed.
+    advice: No action needed for ordinary assets.
+  - id: hidden.executable-binary
+    severity: high
+    title: Executable program file
+    signal: Hidden
+    where: {pattern: "binary_file", magic: "exec"}
+    explain: The file starts with the header of a native executable (ELF, Windows PE or Mach-O), whatever its name says. A skill has no reason to ship a compiled program that cannot be reviewed.
+    advice: Remove the file, or build it from source you have reviewed.
+  - id: hidden.minified-file
+    severity: low
+    title: Minified file
+    signal: Hidden
+    where: {pattern: "minified_file"}
+    explain: The file has very long lines, which makes it hard to read and review.
+    advice: Prefer the readable source.
+  - id: hidden.oversized-file
+    severity: low
+    title: Unusually large file
+    signal: Hidden
+    where: {pattern: "oversized_file"}
+    explain: The file is larger than 1 MB, which is unusual for a skill and makes review harder.
+    advice: Check why the file is large.
+  - id: hidden.extension-mismatch
+    severity: medium
+    title: File is not what its name says
+    signal: Hidden
+    where: {pattern: "extension_mismatch"}
+    explain: A file named like a script or document contains binary data.
+    advice: Do not run or load the file. Remove it or get a clean copy.
+  - id: hidden.parse-budget-exceeded
+    severity: medium
+    title: Analysis incomplete
+    signal: Hidden
+    where: {pattern: "parse_budget_exceeded"}
+    explain: A file was too large or took too long to analyze, so part of it was not checked.
+    advice: Review the named file by hand.
+  - id: hidden.invalid-utf8-script
+    severity: medium
+    title: Script is not valid UTF-8
+    signal: Hidden
+    where: {pattern: "invalid_utf8_script"}
+    explain: A script contains bytes that are not valid text. It was analyzed with replacement characters, so parts may have been misread.
+    advice: Review the script by hand.
+  - id: hidden.parse-errors
+    severity: low
+    title: Script has syntax errors
+    signal: Hidden
+    where: {pattern: "parse_errors"}
+    explain: The script does not parse cleanly, so the analysis of the code around the error may be incomplete.
+    advice: Check the script around the reported line.
+
+  # ---- Sensitive data access --------------------------------------------
+  - id: access.secret-file
+    severity: medium
+    title: Reads a credential file
+    signal: Source
+    where: {class: "secret_file"}
+    explain: The code reads a file that usually holds credentials, such as SSH keys or cloud credentials.
+    advice: Confirm the skill needs this file.
+  - id: access.browser-store
+    severity: medium
+    title: Reads browser data
+    signal: Source
+    where: {class: "browser_store"}
+    explain: The code reads browser profile data, which can include saved passwords, cookies and history.
+    advice: Confirm the skill needs this data.
+  - id: access.wallet
+    severity: medium
+    title: Reads cryptocurrency wallet data
+    signal: Source
+    where: {class: "wallet"}
+    explain: The code reads files that belong to a cryptocurrency wallet.
+    advice: Confirm the skill needs this data.
+  - id: access.keychain
+    severity: medium
+    title: Reads the system keychain
+    signal: Source
+    where: {class: "keychain"}
+    explain: The code reads from the credential store of the operating system.
+    advice: Confirm the skill needs this data.
+  - id: access.secret-env
+    severity: low
+    title: Reads a secret-like environment variable
+    signal: Source
+    where: {class: "secret_env"}
+    explain: The code reads an environment variable whose name suggests a key, token or password.
+    advice: Check what the value is used for.
+
+  # ---- Dangerous operations ---------------------------------------------
+  - id: network.outbound
+    severity: low
+    title: Makes a network request
+    signal: Sink
+    where: {class: "network"}
+    explain: The code sends or fetches data over the network.
+    advice: Check which hosts it talks to and what it sends.
+  - id: exec.run-command
+    severity: medium
+    title: Runs a command
+    signal: Sink
+    where: {class: "exec"}
+    explain: The code starts another program or shell command.
+    advice: Check the command and where its arguments come from.
+  - id: exec.eval
+    severity: high
+    title: Evaluates dynamic code
+    signal: Sink
+    where: {class: "eval"}
+    explain: The code evaluates a string as code, which hides what will really run.
+    advice: Replace dynamic evaluation with direct calls.
+  - id: config.sensitive-write
+    severity: high
+    title: Writes to a sensitive location
+    signal: Sink
+    where: {class: "sensitive_write"}
+    explain: The code writes to a place that changes how the machine or agent behaves later, such as a startup file or configuration folder.
+    advice: Confirm the write is expected and needed.
+  - id: exec.download-and-run
+    severity: critical
+    title: Downloads code and runs it
+    signal: Sink
+    where: {class: "download_exec"}
+    explain: The code fetches content from the network and executes it, so what runs is not what was reviewed.
+    advice: Do not use the skill.
+  - id: exec.reverse-shell
+    severity: critical
+    title: Opens a reverse shell
+    signal: Sink
+    where: {class: "reverse_shell"}
+    explain: The code connects a shell to a remote host, which gives that host control of the machine.
+    advice: Do not use the skill.
+
+  # ---- Data flows -------------------------------------------------------
+  - id: exfil.secret-to-network
+    severity: critical
+    title: Sends sensitive data over the network
+    signal: TaintFlow
+    where: {from: "secret_file|browser_store|wallet|keychain", to: "network"}
+    explain: Data read from a credential file, browser profile, wallet or keychain reaches a network request. This is the shape of credential theft.
+    advice: Do not use the skill.
+  - id: exfil.env-to-network
+    severity: medium
+    title: Sends a secret-like environment variable over the network
+    signal: TaintFlow
+    where: {from: "secret_env", to: "network"}
+    explain: The value of a secret-like environment variable reaches a network request. This is common for API clients but is also how tokens are stolen.
+    advice: Check that the value is only sent to the service it belongs to.
+  - id: exec.tainted-download-exec
+    severity: critical
+    title: Sensitive data feeds downloaded code
+    signal: TaintFlow
+    where: {to: "download_exec"}
+    explain: Data from a sensitive source reaches code that is downloaded and executed.
+    advice: Do not use the skill.
+  - id: exec.tainted-reverse-shell
+    severity: critical
+    title: Sensitive data reaches a reverse shell
+    signal: TaintFlow
+    where: {to: "reverse_shell"}
+    explain: Data from a sensitive source reaches a reverse shell.
+    advice: Do not use the skill.
+  - id: exec.tainted-command
+    severity: medium
+    title: Sensitive data is passed to a command
+    signal: TaintFlow
+    where: {to: "exec"}
+    explain: Data from a sensitive source is passed to a program or shell command.
+    advice: Check what the command does with it.
+  - id: exec.secret-to-command
+    severity: high
+    title: Credential data is passed to a command
+    signal: TaintFlow
+    where: {from: "secret_file|browser_store|wallet|keychain", to: "exec"}
+    explain: Data read from a credential file, browser profile, wallet or keychain is passed to a program or shell command, for example curl, which can send it away.
+    advice: Do not use the skill until the command and its target are explained.
+  - id: exec.tainted-eval
+    severity: high
+    title: Sensitive data is evaluated as code
+    signal: TaintFlow
+    where: {to: "eval"}
+    explain: Data from a sensitive source reaches dynamic code evaluation.
+    advice: Do not use the skill until the flow is explained.
+  - id: config.tainted-write
+    severity: high
+    title: Sensitive data is written to a sensitive location
+    signal: TaintFlow
+    where: {to: "sensitive_write"}
+    explain: Data from a sensitive source is written to a startup or configuration location.
+    advice: Do not use the skill until the flow is explained.
+
+  # ---- Agent configuration and persistence ------------------------------
+  - id: config.writes-hooks
+    severity: critical
+    title: Writes agent hooks
+    signal: AgentConfig
+    where: {target: "hooks", context: "code"}
+    explain: The code adds hooks to the settings of an agent. Hooks run commands automatically on agent events, which is a way to keep running after the skill is removed.
+    advice: Do not use the skill.
+  - id: config.writes-permissions
+    severity: critical
+    title: Changes agent permissions
+    signal: AgentConfig
+    where: {target: "permissions", context: "code"}
+    explain: The code edits the permission settings of the agent, for example to allow commands without asking.
+    advice: Do not use the skill.
+  - id: config.writes-mcp-config
+    severity: critical
+    title: Changes MCP server configuration
+    signal: AgentConfig
+    where: {target: "mcp_config", context: "code"}
+    explain: The code adds or changes MCP server entries, which can start programs or connect the agent to outside servers.
+    advice: Do not use the skill.
+  - id: config.writes-agent-settings
+    severity: critical
+    title: Changes agent settings
+    signal: AgentConfig
+    where: {target: "agent_settings", context: "code"}
+    explain: The code writes to the settings or instruction files of the agent, which changes how it behaves in later sessions.
+    advice: Do not use the skill.
+  - id: config.writes-shell-profile
+    severity: high
+    title: Writes a shell startup file
+    signal: AgentConfig
+    where: {target: "shell_profile", context: "code"}
+    explain: The code edits a shell profile such as .bashrc or a PowerShell profile, so its content runs in every new shell.
+    advice: Remove the write.
+  - id: config.writes-cron
+    severity: high
+    title: Creates a scheduled job
+    signal: AgentConfig
+    where: {target: "cron", context: "code"}
+    explain: The code adds a cron job or scheduled task so it keeps running without the user.
+    advice: Remove the scheduled job.
+  - id: config.writes-launch-agent
+    severity: high
+    title: Creates a login or boot item
+    signal: AgentConfig
+    where: {target: "launch_agent", context: "code"}
+    explain: The code adds a launch agent, systemd unit or similar item that starts at login or boot.
+    advice: Remove the startup item.
+  - id: config.writes-windows-run-key
+    severity: high
+    title: Writes a Windows startup key
+    signal: AgentConfig
+    where: {target: "windows_run_key", context: "code"}
+    explain: The code adds an entry to a Windows Run key so a program starts at every login.
+    advice: Remove the registry write.
+  - id: config.writes-git-hooks
+    severity: high
+    title: Writes git hooks
+    signal: AgentConfig
+    where: {target: "git_hooks", context: "code"}
+    explain: The code adds a git hook or sets a hooks path, so commands run on later git actions.
+    advice: Remove the hook.
+  - id: config.instructs-config-change
+    severity: medium
+    title: Instructions to change agent or system configuration
+    signal: AgentConfig
+    where: {target: "agent_settings|hooks|permissions|mcp_config|shell_profile|cron|launch_agent|windows_run_key|git_hooks", context: "prose"}
+    explain: The instructions tell the agent to change its own settings or a persistence point. This is not code, but an agent may follow it.
+    advice: Check that the change is needed and expected.
+  - id: config.suppression-file
+    severity: medium
+    title: Ships a scanner suppression file
+    signal: AgentConfig
+    where: {target: "suppression_file"}
+    explain: The skill contains or writes a file meant to silence scanner findings. Suppressions in the scanned target are ignored.
+    advice: Remove the file. Suppressions belong in the own configuration of the user.
