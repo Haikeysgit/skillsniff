@@ -297,13 +297,13 @@ pub(crate) fn extract_tar_gz_selected(
         }
         Ok((entries, selector.matched))
     })?;
-    if let Some(sub) = &selection.subpath {
-        if !matched {
-            return Err(AcquireError::NotFound(format!(
-                "path \"{}\" is not in the archive",
-                sanitize_evidence(sub)
-            )));
-        }
+    if let Some(sub) = &selection.subpath
+        && !matched
+    {
+        return Err(AcquireError::NotFound(format!(
+            "path \"{}\" is not in the archive",
+            sanitize_evidence(sub)
+        )));
     }
     let plan = plan(&entries);
 

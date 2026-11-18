@@ -9,7 +9,8 @@ use crate::model::signal::HIDDEN;
 use crate::model::{Coverage, Location, Signal};
 
 /// Every `pattern` value emitted under the `Hidden` kind, including the one the
-/// code analyzer emits when it runs out of parse budget.
+/// code analyzer emits when it runs out of parse budget or meets a script
+/// that is not valid UTF-8.
 pub const HIDDEN_PATTERNS: &[&str] = &[
     "zero_width",
     "bidi_control",
@@ -22,6 +23,7 @@ pub const HIDDEN_PATTERNS: &[&str] = &[
     "extension_mismatch",
     "parse_budget_exceeded",
     "invisible_joiner",
+    "invalid_utf8_script",
 ];
 
 /// Files larger than this are flagged `oversized_file`.
@@ -398,10 +400,10 @@ impl Analyzer for HiddenAnalyzer {
         let mut signals = Vec::new();
         for f in &ctx.inventory.files {
             file_flags(f, &mut signals);
-            if f.content_type == ContentType::Text {
-                if let Some(text) = ctx.read_text(&f.path) {
-                    scan_text(&f.path, &text, &mut signals);
-                }
+            if f.content_type == ContentType::Text
+                && let Some(text) = ctx.read_text(&f.path)
+            {
+                scan_text(&f.path, &text, &mut signals);
             }
         }
         AnalyzerOutput {

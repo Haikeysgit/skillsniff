@@ -146,10 +146,10 @@ impl<'a> Budget<'a> {
         if total > self.limits.max_total_bytes {
             return Err(total_exceeded(self.limits));
         }
-        if let Some(c) = self.compressed {
-            if total > ratio_cap(self.limits, c) {
-                return Err(ratio_exceeded(self.limits));
-            }
+        if let Some(c) = self.compressed
+            && total > ratio_cap(self.limits, c)
+        {
+            return Err(ratio_exceeded(self.limits));
         }
         self.total = total;
         Ok(())

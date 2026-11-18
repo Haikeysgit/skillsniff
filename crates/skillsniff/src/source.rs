@@ -89,10 +89,10 @@ fn github(
         }
         _ => None,
     };
-    if let Some(r) = git_ref {
-        if !valid_ref(r) {
-            return Err(format!("invalid git ref \"{}\"", shown(r)));
-        }
+    if let Some(r) = git_ref
+        && !valid_ref(r)
+    {
+        return Err(format!("invalid git ref \"{}\"", shown(r)));
     }
     Ok(Source::GitHub {
         owner: owner.to_string(),

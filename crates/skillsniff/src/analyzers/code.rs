@@ -18,11 +18,16 @@ use crate::target::{FileRole, Lang};
 
 pub use lang_python::PythonRules;
 pub use patterns::{SINK_CLASSES, SOURCE_CLASSES};
-pub use taint::{Facts, Flow, Site, mark_download_exec, propagate};
+pub use taint::{Facts, Flow, Site, mark_download_exec, propagate, propagate_bounded};
 
 /// Wall-clock budget for parsing one file, and separately for extracting its
 /// facts.
 pub const PARSE_BUDGET: Duration = Duration::from_secs(2);
+
+/// Wall-clock budget for the whole analyzer, below the runner's timeout so
+/// partial results survive. Files not started in time are reported as
+/// `parse_budget_exceeded`.
+pub const ANALYZER_DEADLINE: Duration = Duration::from_secs(20);
 
 /// Longest piece of display text kept on each side of an evidence arrow.
 const EVIDENCE_PART_CHARS: usize = 90;
@@ -88,19 +93,35 @@ fn signal(kind: &str, fields: &[(&str, &str)], locations: Vec<Location>, evidenc
     }
 }
 
-fn budget_signal(file: &str) -> Signal {
+fn hidden_signal(file: &str, pattern: &str, evidence: &str) -> Signal {
     signal(
         HIDDEN,
-        &[("pattern", "parse_budget_exceeded")],
+        &[("pattern", pattern)],
         vec![Location {
             file: file.to_string(),
             line: 0,
         }],
-        &format!(
-            "analysis stopped after {}s; file only partly checked",
-            PARSE_BUDGET.as_secs()
-        ),
+        evidence,
     )
+}
+
+fn budget_signal(file: &str) -> Signal {
+    let why = format!(
+        "analysis stopped after {}s; file only partly checked",
+        PARSE_BUDGET.as_secs()
+    );
+    hidden_signal(file, "parse_budget_exceeded", &why)
+}
+
+/// Script text, decoded lossily when it is not valid UTF-8 (Python and
+/// other interpreters accept declared encodings). The flag is true for lossy.
+fn read_script(ctx: &ScanContext, path: &str) -> Option<(String, bool)> {
+    let bytes = ctx.read_bytes(path)?;
+    let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes);
+    Some(match std::str::from_utf8(bytes) {
+        Ok(text) => (text.to_string(), false),
+        Err(_) => (String::from_utf8_lossy(bytes).into_owned(), true),
+    })
 }
 
 fn at(file: &str, line: u32) -> Location {
@@ -112,7 +133,7 @@ fn at(file: &str, line: u32) -> Location {
 
 /// Signals for one file's facts: sinks and sources (each sorted by line, with
 /// exact repeats dropped), then flows.
-fn file_signals(file: &str, lang: &str, facts: &Facts, out: &mut Vec<Signal>) {
+fn file_signals(file: &str, lang: &str, facts: &Facts, flows: &[Flow], out: &mut Vec<Signal>) {
     let mut seen = BTreeSet::new();
     let mut sites: Vec<(&str, &Site)> = facts
         .sources
@@ -141,7 +162,7 @@ fn file_signals(file: &str, lang: &str, facts: &Facts, out: &mut Vec<Signal>) {
         .map(|s| (s.id.as_str(), s.text.as_str()))
         .collect();
     let mut seen_flows = BTreeSet::new();
-    for f in propagate(facts) {
+    for f in flows {
         let key = (
             f.from_class.clone(),
             f.to_class.clone(),
@@ -164,12 +185,12 @@ fn file_signals(file: &str, lang: &str, facts: &Facts, out: &mut Vec<Signal>) {
 /// Static source, sink and taint analysis of script files.
 pub struct CodeAnalyzer;
 
-impl Analyzer for CodeAnalyzer {
-    fn id(&self) -> &'static str {
-        "code"
-    }
-
-    fn run(&self, ctx: &ScanContext) -> AnalyzerOutput {
+impl CodeAnalyzer {
+    /// Analyzes script files until `deadline` (measured from the call) runs
+    /// out; files not reached by then each get a `parse_budget_exceeded`
+    /// signal, and everything gathered so far is returned with `Ran`.
+    pub fn run_with_deadline(&self, ctx: &ScanContext, deadline: Duration) -> AnalyzerOutput {
+        let started = Instant::now();
         let mut signals = Vec::new();
         for (path, role) in &ctx.roles {
             let FileRole::Script(lang) = role else {
@@ -178,10 +199,26 @@ impl Analyzer for CodeAnalyzer {
             let Some((rules, lang_name)) = rules_for(*lang) else {
                 continue;
             };
-            let Some(src) = ctx.read_text(path) else {
+            let left = deadline.saturating_sub(started.elapsed());
+            if left.is_zero() {
+                signals.push(hidden_signal(
+                    path,
+                    "parse_budget_exceeded",
+                    "not analyzed: code analysis time limit reached",
+                ));
+                continue;
+            }
+            let Some((src, lossy)) = read_script(ctx, path) else {
                 continue;
             };
-            let tree = match parse(&rules.language(), &src, PARSE_BUDGET) {
+            if lossy {
+                signals.push(hidden_signal(
+                    path,
+                    "invalid_utf8_script",
+                    "script is not valid UTF-8; analyzed with replacement characters",
+                ));
+            }
+            let tree = match parse(&rules.language(), &src, left.min(PARSE_BUDGET)) {
                 Ok(Some(tree)) => tree,
                 Ok(None) => {
                     signals.push(budget_signal(path));
@@ -195,15 +232,27 @@ impl Analyzer for CodeAnalyzer {
                 }
             };
             let mut facts = rules.facts(&tree, &src);
-            if facts.budget_exceeded {
+            let mut partial = facts.budget_exceeded;
+            partial |= mark_download_exec(&mut facts);
+            let (flows, cut) = propagate_bounded(&facts);
+            if partial || cut {
                 signals.push(budget_signal(path));
             }
-            mark_download_exec(&mut facts);
-            file_signals(path, lang_name, &facts, &mut signals);
+            file_signals(path, lang_name, &facts, &flows, &mut signals);
         }
         AnalyzerOutput {
             signals,
             coverage: Coverage::Ran,
         }
+    }
+}
+
+impl Analyzer for CodeAnalyzer {
+    fn id(&self) -> &'static str {
+        "code"
+    }
+
+    fn run(&self, ctx: &ScanContext) -> AnalyzerOutput {
+        self.run_with_deadline(ctx, ANALYZER_DEADLINE)
     }
 }

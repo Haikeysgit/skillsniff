@@ -36,6 +36,15 @@ impl ScanContext {
     /// Returns `None` for paths outside the inventory, files over 10 MiB and
     /// content that is not valid UTF-8.
     pub fn read_text(&self, path: &str) -> Option<String> {
+        let bytes = self.read_bytes(path)?;
+        let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes);
+        String::from_utf8(bytes.to_vec()).ok()
+    }
+
+    /// Read an inventoried file's raw bytes.
+    ///
+    /// Returns `None` for paths outside the inventory and files over 10 MiB.
+    pub fn read_bytes(&self, path: &str) -> Option<Vec<u8>> {
         let entry = self
             .inventory
             .files
@@ -50,9 +59,7 @@ impl ScanContext {
         if fs::metadata(&full).ok()?.len() > MAX_READ_BYTES {
             return None;
         }
-        let bytes = fs::read(full).ok()?;
-        let bytes = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes);
-        String::from_utf8(bytes.to_vec()).ok()
+        fs::read(full).ok()
     }
 }
 

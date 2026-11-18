@@ -6,6 +6,8 @@ use super::patterns::{DOWNLOAD_EXEC, EVAL, EXEC, NETWORK};
 
 /// Fixed-point rounds before propagation gives up.
 const MAX_ROUNDS: usize = 32;
+/// Reference lookups one spread may make before giving up.
+const MAX_SPREAD_WORK: usize = 20_000_000;
 
 /// A source or sink occurrence.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,17 +71,26 @@ fn merge(into: &mut Taint, from: &Taint) -> bool {
 }
 
 /// Taint of every name and seed id. `seeds` maps a site id to its class and
-/// origin; assignments spread it to variables until a fixed point (or
-/// [`MAX_ROUNDS`]).
+/// origin; assignments spread it to variables until a fixed point, for at most
+/// [`MAX_ROUNDS`] rounds and [`MAX_SPREAD_WORK`] reference lookups. The flag
+/// is true when the work limit cut the spread short.
 fn spread(
     assigns: &[(String, Vec<String>, u32)],
     seeds: HashMap<&str, Taint>,
-) -> HashMap<String, Taint> {
+) -> (HashMap<String, Taint>, bool) {
     let mut tainted: HashMap<String, Taint> =
         seeds.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
+    if tainted.is_empty() {
+        return (tainted, false);
+    }
+    let mut work = 0usize;
     for _ in 0..MAX_ROUNDS {
         let mut changed = false;
         for (var, refs, _) in assigns {
+            work += refs.len() + 1;
+            if work > MAX_SPREAD_WORK {
+                return (tainted, true);
+            }
             let mut acc = Taint::new();
             for r in refs {
                 if let Some(t) = tainted.get(r) {
@@ -95,7 +106,7 @@ fn spread(
             break;
         }
     }
-    tainted
+    (tainted, false)
 }
 
 fn reaching(refs: &[String], tainted: &HashMap<String, Taint>) -> Taint {
@@ -111,13 +122,18 @@ fn reaching(refs: &[String], tainted: &HashMap<String, Taint>) -> Taint {
 /// Flows from sources to sinks, one per (sink, source class), each naming
 /// the earliest contributing source. Sorted and free of duplicates.
 pub fn propagate(facts: &Facts) -> Vec<Flow> {
+    propagate_bounded(facts).0
+}
+
+/// [`propagate`], also reporting whether the work limit cut it short.
+pub fn propagate_bounded(facts: &Facts) -> (Vec<Flow>, bool) {
     let seeds = facts
         .sources
         .iter()
         .enumerate()
         .map(|(i, s)| (s.id.as_str(), Taint::from([(s.class.clone(), (s.line, i))])))
         .collect();
-    let tainted = spread(&facts.assigns, seeds);
+    let (tainted, cut) = spread(&facts.assigns, seeds);
     let mut flows = BTreeSet::new();
     for sink in &facts.sinks {
         for (class, (line, idx)) in reaching(&sink.args_refs, &tainted) {
@@ -131,21 +147,24 @@ pub fn propagate(facts: &Facts) -> Vec<Flow> {
             });
         }
     }
-    flows.into_iter().collect()
+    (flows.into_iter().collect(), cut)
 }
 
-/// Variables and ids that `seeds` reach through `assigns` (seeds included).
-pub fn reached(assigns: &[(String, Vec<String>, u32)], seeds: &[&str]) -> HashSet<String> {
+/// Variables and ids that `seeds` reach through `assigns` (seeds included),
+/// and whether the work limit cut the search short.
+pub fn reached(assigns: &[(String, Vec<String>, u32)], seeds: &[&str]) -> (HashSet<String>, bool) {
     let seeds = seeds
         .iter()
         .map(|s| (*s, Taint::from([(String::new(), (0, 0))])))
         .collect();
-    spread(assigns, seeds).into_keys().collect()
+    let (tainted, cut) = spread(assigns, seeds);
+    (tainted.into_keys().collect(), cut)
 }
 
 /// Turns `eval` and `exec` sinks whose arguments reach the result of a
 /// `network` sink into `download_exec` sinks (fetched code being run).
-pub fn mark_download_exec(facts: &mut Facts) {
+/// Returns true when the work limit cut the search short.
+pub fn mark_download_exec(facts: &mut Facts) -> bool {
     let seeds = facts
         .sinks
         .iter()
@@ -158,10 +177,7 @@ pub fn mark_download_exec(facts: &mut Facts) {
             )
         })
         .collect::<HashMap<_, _>>();
-    if seeds.is_empty() {
-        return;
-    }
-    let tainted = spread(&facts.assigns, seeds);
+    let (tainted, cut) = spread(&facts.assigns, seeds);
     for sink in &mut facts.sinks {
         if (sink.class == EVAL || sink.class == EXEC)
             && !reaching(&sink.args_refs, &tainted).is_empty()
@@ -169,4 +185,5 @@ pub fn mark_download_exec(facts: &mut Facts) {
             sink.class = DOWNLOAD_EXEC.to_string();
         }
     }
+    cut
 }

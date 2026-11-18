@@ -29,8 +29,10 @@ pub const SENSITIVE_WRITE: &str = "sensitive_write";
 pub const DOWNLOAD_EXEC: &str = "download_exec";
 pub const REVERSE_SHELL: &str = "reverse_shell";
 
+/// Credential directories, matched as a whole path segment.
+const SECRET_DIRS: &[&str] = &[".ssh", ".aws", ".kube", ".docker", ".gnupg"];
+
 const SECRET_FILE_MARKERS: &[&str] = &[
-    ".ssh/",
     ".aws/credentials",
     ".aws/config",
     ".npmrc",
@@ -120,20 +122,56 @@ pub fn normalize_path(text: &str) -> String {
 /// `.env` as a file name: `.env`, `.env.local`, `/x/.env`, but not
 /// `.environment` or `process.env`.
 fn has_dotenv(text: &str) -> bool {
+    has_segment(text, ".env", |b| {
+        b.is_none_or(|b| !(b.is_ascii_alphanumeric() || b == b'_'))
+    })
+}
+
+/// Whether `name` starts a path segment (after start, `/`, a quote, a space
+/// or `~`) and `ends` accepts the byte after it (`None` at end of text).
+fn has_segment(text: &str, name: &str, ends: impl Fn(Option<u8>) -> bool) -> bool {
     let bytes = text.as_bytes();
     let mut from = 0;
-    while let Some(rel) = text[from..].find(".env") {
+    while let Some(rel) = text[from..].find(name) {
         let at = from + rel;
-        let before_ok = at == 0 || matches!(bytes[at - 1], b'/' | b'"' | b'\'' | b' ' | b'~');
-        let after_ok = bytes
-            .get(at + 4)
-            .is_none_or(|b| !(b.is_ascii_alphanumeric() || *b == b'_'));
-        if before_ok && after_ok {
+        let starts = at == 0 || matches!(bytes[at - 1], b'/' | b'"' | b'\'' | b' ' | b'~');
+        if starts && ends(bytes.get(at + name.len()).copied()) {
             return true;
         }
-        from = at + 4;
+        from = at + name.len();
     }
     false
+}
+
+/// A credential directory as a whole segment: `~/.ssh`, `.aws/x`, but not
+/// `.sshkeys` or `.awsome`. Expects text already normalized to `/`.
+fn has_secret_dir(text: &str) -> bool {
+    SECRET_DIRS.iter().any(|d| {
+        has_segment(text, d, |b| {
+            b.is_none_or(|b| matches!(b, b'/' | b'"' | b'\'' | b' ' | b'`'))
+        })
+    })
+}
+
+/// Whether a shell command fetches with `curl` or `wget` and pipes the result
+/// into `sh` or `bash` (`curl -s u | sh`, `wget -qO- u|bash`).
+pub fn pipes_download_to_shell(cmd: &str) -> bool {
+    let lower = cmd.to_ascii_lowercase();
+    let Some(fetch) = ["curl", "wget"].iter().filter_map(|f| lower.find(f)).min() else {
+        return false;
+    };
+    lower[fetch..].match_indices('|').any(|(i, _)| {
+        let rest = lower[fetch + i + 1..].trim_start();
+        let rest = rest.strip_prefix("sudo ").map_or(rest, str::trim_start);
+        ["bash", "sh"].iter().any(|sh| {
+            rest.strip_prefix(sh).is_some_and(|after| {
+                after
+                    .bytes()
+                    .next()
+                    .is_none_or(|b| !(b.is_ascii_alphanumeric() || b == b'_'))
+            })
+        })
+    })
 }
 
 /// Source class of a string literal (or folded path text), if any.
@@ -143,7 +181,7 @@ fn has_dotenv(text: &str) -> bool {
 pub fn literal_source_class(text: &str) -> Option<&'static str> {
     let t = normalize_path(text);
     let lower = t.to_ascii_lowercase();
-    if SECRET_FILE_MARKERS.iter().any(|m| t.contains(m)) || has_dotenv(&t) {
+    if SECRET_FILE_MARKERS.iter().any(|m| t.contains(m)) || has_dotenv(&t) || has_secret_dir(&t) {
         return Some(SECRET_FILE);
     }
     if KEYCHAIN_MARKERS.iter().any(|m| t.contains(m)) {
