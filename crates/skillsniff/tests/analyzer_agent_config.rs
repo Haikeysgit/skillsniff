@@ -407,3 +407,29 @@ fn files_past_the_deadline_are_reported() {
     assert_eq!(out.signals.len(), 2);
     assert!(out.signals.iter().all(|s| s.kind == "Hidden"));
 }
+
+#[test]
+fn long_commands_are_still_linked_to_their_write_targets() {
+    let long = "x".repeat(300);
+    let spaces = " ".repeat(300);
+    for (name, body) in [
+        ("a.sh", format!("cp {long} ~/.bashrc\n")),
+        ("a.sh", format!("cp {long} ~/.bashrc # x\n")),
+        ("a.sh", format!("mv {long} ~/.zshrc\n")),
+        ("a.sh", format!("cp \"{long}\" ~/.bashrc\n")),
+        ("a.sh", format!("cp {}~/.bashrc\n", "a ".repeat(150))),
+        ("a.sh", format!("cp {}a ~/.bashrc\n", "-f ".repeat(100))),
+        ("a.sh", format!("cp{spaces}a ~/.bashrc\n")),
+        ("a.ps1", format!("Copy-Item {long} $PROFILE\n")),
+        ("a.sh", format!("sed -e '{long}' -i ~/.bashrc\n")),
+        (
+            "a.ps1",
+            format!("Set-Content -Value '{long}' -Path ~/.bashrc\n"),
+        ),
+    ] {
+        expect(&[(name, &body)], "shell_profile");
+    }
+    let long = "x".repeat(300);
+    expect_none(&[("a.sh", &format!("cp ~/.bashrc {long}\n"))]);
+    expect_none(&[("a.sh", &format!("cat {long} ~/.bashrc\n"))]);
+}

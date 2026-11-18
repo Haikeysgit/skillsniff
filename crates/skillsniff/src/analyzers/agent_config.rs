@@ -315,6 +315,25 @@ struct LineIdx {
     has_method: bool,
     /// First `open(` call with a write mode.
     open_write: Option<usize>,
+    /// Whitespace-separated tokens as byte spans.
+    tokens: Vec<(usize, usize)>,
+    /// For each token index (plus one past the end), the first token at or
+    /// after it that does not start with `-`.
+    next_non_flag: Vec<usize>,
+    /// Same, for a token that is neither a flag nor all digits.
+    next_non_flag_digit: Vec<usize>,
+    /// Same, for a token starting with `-i`.
+    next_dash_i: Vec<usize>,
+}
+
+/// `next[i]` is the first index at or after `i` where `hit` holds, or the
+/// token count.
+fn suffix_next(n: usize, hit: impl Fn(usize) -> bool) -> Vec<usize> {
+    let mut next = vec![n; n + 2];
+    for i in (0..n).rev() {
+        next[i] = if hit(i) { i } else { next[i + 1] };
+    }
+    next
 }
 
 fn comment_start(line: &str) -> Option<usize> {
@@ -358,6 +377,20 @@ fn index_line(line: &str) -> LineIdx {
     let open_write = find_all(line, "open(")
         .into_iter()
         .find(|&o| open_mode_writes(&line[o + 5..]));
+    let tokens: Vec<(usize, usize)> = line
+        .split_whitespace()
+        .map(|t| {
+            let s = t.as_ptr() as usize - line.as_ptr() as usize;
+            (s, s + t.len())
+        })
+        .collect();
+    let n = tokens.len();
+    let tok = |i: usize| &line[tokens[i].0..tokens[i].1];
+    let next_non_flag = suffix_next(n, |i| !tok(i).starts_with('-'));
+    let next_non_flag_digit = suffix_next(n, |i| {
+        !tok(i).starts_with('-') && !tok(i).chars().all(|c| c.is_ascii_digit())
+    });
+    let next_dash_i = suffix_next(n, |i| tok(i).starts_with("-i"));
     LineIdx {
         seps,
         terms,
@@ -365,6 +398,10 @@ fn index_line(line: &str) -> LineIdx {
         first_call,
         has_method: METHOD_WORDS.iter().any(|w| !find_all(line, w).is_empty()),
         open_write,
+        next_non_flag,
+        next_non_flag_digit,
+        next_dash_i,
+        tokens,
     }
 }
 
@@ -396,7 +433,9 @@ fn clean_token(t: &str) -> &str {
 /// Whether the path at `at` is the target or destination of a write in the
 /// same command: a redirect, the last argument of a copy, a `tee` argument,
 /// the path argument of `Set-Content` and friends, or a path passed to an
-/// open-for-write or write-file call. Constant work per call.
+/// open-for-write or write-file call. Constant work per call: the command
+/// and its argument boundaries come from the per-line token tables, so the
+/// distance between command and path does not matter.
 fn is_write_target(line: &str, ix: &LineIdx, at: usize) -> bool {
     if redirected(line, at)
         || ix.open_write.is_some_and(|o| o < at)
@@ -405,77 +444,58 @@ fn is_write_target(line: &str, ix: &LineIdx, at: usize) -> bool {
     {
         return true;
     }
-    let (before, _) = window_before(line, at);
-    let base = at - before.len();
-    let tok_start = before
-        .char_indices()
-        .rev()
-        .find(|(_, c)| c.is_whitespace())
-        .map_or(base, |(i, c)| base + i + c.len_utf8());
-    let seg_start = match ix.seps.partition_point(|&p| p < tok_start) {
+    let toks = &ix.tokens;
+    let Some(ti) = toks.partition_point(|&(s, _)| s <= at).checked_sub(1) else {
+        return false;
+    };
+    let seg_start = match ix.seps.partition_point(|&p| p < at) {
         0 => 0,
         k => ix.seps[k - 1] + 1,
     };
-    let seg = &line[seg_start.max(base)..tok_start];
-    let mut it = seg.split_whitespace();
-    let mut words: Vec<&str> = it
-        .by_ref()
-        .take(12)
-        .map(clean_token)
-        .filter(|t| !t.is_empty())
-        .collect();
-    let long = it.next().is_some();
-    let last_word = seg.split_whitespace().next_back().map_or("", clean_token);
-    while words.first().is_some_and(|w| WRAPPERS.contains(w)) {
-        words.remove(0);
+    // First word of the command: the first token ending after the segment
+    // start, skipping a few wrappers such as `sudo`.
+    let mut t0 = toks.partition_point(|&(_, e)| e <= seg_start);
+    for _ in 0..8 {
+        let Some(&(s, e)) = toks.get(t0) else { break };
+        if t0 < ti && WRAPPERS.contains(&clean_token(&line[s.max(seg_start)..e])) {
+            t0 += 1;
+        } else {
+            break;
+        }
     }
-    let Some(&first) = words.first() else {
+    if t0 >= ti {
         return false;
-    };
+    }
+    let (s, e) = toks[t0];
+    let first = clean_token(&line[s.max(seg_start)..e]);
     let cmd = first.rsplit('/').next().unwrap_or(first);
-    let args = &words[1..];
-    let prev = if args.is_empty() && !long {
-        ""
-    } else {
-        last_word
-    };
-    let end = line[at..]
-        .char_indices()
-        .take(LOCAL_WINDOW)
-        .find(|(_, c)| c.is_whitespace())
-        .map_or_else(
-            || {
-                line[at..]
-                    .char_indices()
-                    .nth(LOCAL_WINDOW)
-                    .map_or(line.len(), |(i, _)| at + i)
-            },
-            |(i, _)| at + i,
-        );
+    let word = |i: usize| clean_token(&line[toks[i].0..toks[i].1]);
+    let no_args = t0 + 1 == ti;
+    let prev = if no_args { "" } else { word(ti - 1) };
+    let flags_only = ix.next_non_flag[t0 + 1] >= ti;
+    let end = toks[ti].1;
     let stop = match ix.terms.partition_point(|&p| p < end) {
         k if k < ix.terms.len() => ix.terms[k],
         _ => line.len(),
     };
-    let tail = &line[end..stop];
-    let last_arg = tail
-        .split_whitespace()
-        .all(|t| t.starts_with('-') || t.chars().all(|c| c.is_ascii_digit()));
+    let nf = ix.next_non_flag_digit[ti + 1];
+    let last_arg = toks.get(nf).is_none_or(|&(s, _)| s >= stop);
     if LAST_ARG_CMDS.contains(&cmd) {
         return last_arg;
     }
     if cmd == "sed" {
-        return args.iter().any(|a| a.starts_with("-i")) && last_arg;
+        return ix.next_dash_i[t0 + 1] < ti && last_arg;
     }
     if cmd == "tee" {
         return true;
     }
     if FIRST_ARG_CMDS.contains(&cmd) {
-        return PATH_FLAGS.contains(&prev) || (!long && args.iter().all(|a| a.starts_with('-')));
+        return PATH_FLAGS.contains(&prev) || flags_only;
     }
     if OUTPUT_FLAG_CMDS.contains(&cmd) {
         return PATH_FLAGS.contains(&prev);
     }
-    (cmd == "reg" || cmd == "reg.exe") && !long && args == ["add"]
+    (cmd == "reg" || cmd == "reg.exe") && t0 + 2 == ti && word(t0 + 1) == "add"
 }
 
 /// `git config core.hookspath` writes only when it sets or unsets a value.
