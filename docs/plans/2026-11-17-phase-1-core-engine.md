@@ -411,14 +411,14 @@ for each sink:
 ## Task 15: Rule engine and Phase 1 rule pack
 
 **Files:**
-- Create: `crates/skillsniff/src/rules.rs`, `rules/core.yaml`
+- Create: `crates/skillsniff/src/rules.rs`, `crates/skillsniff/rules/core.yaml`
 - Test: `crates/skillsniff/tests/rules.rs`
 
 **Interfaces:**
 - Consumes: `Signal`, `Finding`, `Severity`.
 - Produces:
   - `struct Rule { id: String, severity: Severity, title: String, signal: String, r#where: BTreeMap<String, String>, explain: String, advice: String }`.
-  - `struct RulePack { version: String, rules: Vec<Rule> }`; `fn builtin() -> RulePack` (from `include_str!("../../../rules/core.yaml")`); `fn load_extra(dir: &Path) -> Result<Vec<Rule>, String>`; `fn merge(builtin: RulePack, extra: Vec<Rule>) -> Result<RulePack, String>` (an extra rule reusing a built-in id is an error: extras add, never replace).
+  - `struct RulePack { version: String, rules: Vec<Rule> }`; `fn builtin() -> RulePack` (from `include_str!("../rules/core.yaml")`); `fn load_extra(dir: &Path) -> Result<Vec<Rule>, String>`; `fn merge(builtin: RulePack, extra: Vec<Rule>) -> Result<RulePack, String>` (an extra rule reusing a built-in id is an error: extras add, never replace).
   - `fn apply(pack: &RulePack, signals: &[Signal]) -> Vec<Finding>`: a rule matches a signal when `signal.kind == rule.signal` and every `where` key equals the signal field. One finding per (rule, signal). `evidence` passes through `sanitize_evidence`.
   - Rule pack file format (YAML, parsed with `yaml-rust2`): top-level `version: "2026.11.1"` and `rules:` list using the fields above, `where` written as a mapping.
 - Rule pack content: about 60 rules covering every signal pattern from Tasks 4, 9, 10 to 14. Severity defaults:
@@ -430,7 +430,7 @@ for each sink:
 
 - [ ] **Step 1: Write failing tests:** `builtin_pack_loads_and_ids_are_unique`, `every_signal_pattern_has_a_rule` (iterate the pattern constants from Tasks 4 and 9 to 14), `where_requires_all_fields`, `extra_rule_cannot_replace_builtin`, `evidence_is_sanitized`.
 - [ ] **Step 2: Run** and confirm failures.
-- [ ] **Step 3: Implement** the engine and write `rules/core.yaml`.
+- [ ] **Step 3: Implement** the engine and write `crates/skillsniff/rules/core.yaml`.
 - [ ] **Step 4: Run tests**; expect PASS.
 - [ ] **Step 5: Commit** `feat: add rule engine and Phase 1 rule pack`.
 
@@ -572,7 +572,7 @@ for each sink:
   - `scripts/fp-rate.sh`: scans every benign entry with the release binary and prints `false positives: N/M (P%)`; exits 1 if above 5%.
 
 - [ ] **Step 1: Write `tests/fixtures/README.md`** stating the fixtures are inert test data and listing the inertness rules from Global Constraints.
-- [ ] **Step 2: Write fixtures**, at least one per rule in `rules/core.yaml`, plus combination fixtures (exfil + reviewer text, hidden bidi in SKILL.md, case-colliding archive built in test setup).
+- [ ] **Step 2: Write fixtures**, at least one per rule in `crates/skillsniff/rules/core.yaml`, plus combination fixtures (exfil + reviewer text, hidden bidi in SKILL.md, case-colliding archive built in test setup).
 - [ ] **Step 3: Write `corpus.rs`** iterating fixture directories; run it and confirm every fixture passes. Fix rules, not expectations, when a malicious fixture is missed.
 - [ ] **Step 4: Run** `scripts/fp-rate.sh` against the benign corpus; tune rules until at most 5%. Record the result in the PR description.
 - [ ] **Step 5: Performance check:** scan the largest benign entry (under 5 MB) with `--offline` from a local copy; must finish under 10 s on the CI Linux runner. Add as an ignored test run in CI with `-- --ignored`.

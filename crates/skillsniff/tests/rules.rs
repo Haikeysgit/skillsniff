@@ -56,6 +56,7 @@ fn rule(id: &str, signal: &str, wh: &[(&str, &str)], severity: Severity) -> Rule
 fn pack_of(rules: Vec<Rule>) -> RulePack {
     RulePack {
         version: "t".to_string(),
+        builtin_count: rules.len(),
         rules,
     }
 }
@@ -289,23 +290,20 @@ fn hidden_false_positive_tuning() {
     assert_eq!(entropy("hex", "48"), Severity::Medium);
     assert_eq!(entropy("base64", "40"), Severity::Medium);
     assert_eq!(h(&[("pattern", "high_entropy")]), Severity::Medium);
-    for ext in [
-        "png", "jpg", "jpeg", "gif", "webp", "ico", "svg", "woff", "woff2", "ttf", "otf",
-    ] {
+    for magic in ["image", "font"] {
         assert_eq!(
-            h(&[("pattern", "binary_file"), ("ext", ext)]),
+            h(&[("pattern", "binary_file"), ("magic", magic)]),
             Severity::Low,
-            "{ext}"
+            "{magic}"
         );
     }
-    assert_eq!(
-        h(&[("pattern", "binary_file"), ("ext", "exe")]),
-        Severity::Medium
-    );
-    assert_eq!(
-        h(&[("pattern", "binary_file"), ("ext", "")]),
-        Severity::Medium
-    );
+    for magic in ["other", "archive"] {
+        assert_eq!(
+            h(&[("pattern", "binary_file"), ("magic", magic)]),
+            Severity::Medium
+        );
+    }
+    assert_eq!(h(&[("pattern", "binary_file")]), Severity::Medium);
     assert_eq!(h(&[("pattern", "minified_file")]), Severity::Low);
     assert_eq!(h(&[("pattern", "oversized_file")]), Severity::Low);
     assert_eq!(h(&[("pattern", "parse_errors")]), Severity::Low);
@@ -336,4 +334,61 @@ fn inventory_and_instruction_severities() {
             "{p}"
         );
     }
+}
+
+#[test]
+fn extra_rule_cannot_lower_a_builtin_severity() {
+    let fields = [
+        ("from", "secret_file"),
+        ("to", "network"),
+        ("lang", "python"),
+    ];
+    let quiet = rule("custom.quiet", "TaintFlow", &fields, Severity::Low);
+    let pack = merge(builtin(), vec![quiet]).unwrap();
+    let s = sig("TaintFlow", &fields);
+    let f = apply(&pack, std::slice::from_ref(&s));
+    assert_eq!(f.len(), 1);
+    assert_eq!(f[0].rule, "exfil.secret-to-network");
+    assert_eq!(f[0].severity, Severity::Critical);
+
+    // An extra rule of equal or higher severity is reported as well.
+    let loud = rule("custom.loud", "TaintFlow", &fields, Severity::Critical);
+    let pack = merge(builtin(), vec![loud]).unwrap();
+    let ids: Vec<String> = apply(&pack, &[s]).into_iter().map(|f| f.rule).collect();
+    assert_eq!(ids, ["exfil.secret-to-network", "custom.loud"]);
+}
+
+#[test]
+fn extra_rule_alone_still_matches() {
+    let extra = rule("custom.new", "Hidden", &[("pattern", "zz")], Severity::Low);
+    let pack = merge(builtin(), vec![extra]).unwrap();
+    let f = apply(&pack, &[sig("Hidden", &[("pattern", "zz")])]);
+    assert_eq!(f[0].rule, "custom.new");
+}
+
+#[test]
+fn secret_file_to_exec_is_high_and_env_to_exec_medium() {
+    let flow = |from: &str| sev("TaintFlow", &[("from", from), ("to", "exec")]);
+    for from in ["secret_file", "browser_store", "wallet", "keychain"] {
+        assert_eq!(flow(from), Severity::High, "{from}");
+    }
+    assert_eq!(flow("secret_env"), Severity::Medium);
+}
+
+#[test]
+fn executable_binary_is_high_and_disguised_assets_are_not_low() {
+    let h = |fields: &[(&str, &str)]| one(sig("Hidden", fields));
+    let f = h(&[
+        ("pattern", "binary_file"),
+        ("magic", "exec"),
+        ("ext", "woff2"),
+    ]);
+    assert_eq!(f.rule, "hidden.executable-binary");
+    assert_eq!(f.severity, Severity::High);
+    let f = h(&[
+        ("pattern", "binary_file"),
+        ("magic", "other"),
+        ("ext", "png"),
+    ]);
+    assert_eq!(f.severity, Severity::Medium);
 }

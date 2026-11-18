@@ -177,7 +177,7 @@ fn non_utf8_py_is_binary_with_extension_mismatch_and_no_panic() {
 
 #[test]
 fn binary_asset_without_script_extension_has_no_mismatch() {
-    let sigs = run(&[("logo.png", vec![0x89u8, 0x50, 0x00, 0x47])]);
+    let sigs = run(&[("logo.png", png())]);
     assert!(with(&sigs, "extension_mismatch").is_empty());
 }
 
@@ -272,12 +272,77 @@ fn high_entropy_carries_alphabet_and_length() {
 
 #[test]
 fn binary_file_carries_lowercase_extension() {
-    let sigs = run(&[
-        ("Logo.PNG", vec![0x89u8, 0x50, 0x00, 0x47]),
-        ("blob", vec![0u8, 1, 2]),
-    ]);
+    let sigs = run(&[("Logo.PNG", png()), ("blob", vec![0u8, 1, 2])]);
     let b = with(&sigs, "binary_file");
     let ext = |f: &str| b.iter().find(|s| s.locations[0].file == f).unwrap().fields["ext"].clone();
     assert_eq!(ext("Logo.PNG"), "png");
     assert_eq!(ext("blob"), "");
+}
+
+fn png() -> Vec<u8> {
+    let mut v = vec![0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    v.extend_from_slice(&[0, 0, 0, 13, b'I', b'H', b'D', b'R', 0, 0]);
+    v
+}
+
+fn magic_of(sigs: &[Signal], file: &str) -> String {
+    with(sigs, "binary_file")
+        .iter()
+        .find(|s| s.locations[0].file == file)
+        .unwrap_or_else(|| panic!("no binary_file for {file}"))
+        .fields["magic"]
+        .clone()
+}
+
+#[test]
+fn magic_classes_are_detected_from_content() {
+    let mut elf = vec![0x7fu8, b'E', b'L', b'F'];
+    elf.extend_from_slice(&[2, 1, 1, 0, 0, 0]);
+    let mut webp = b"RIFF".to_vec();
+    webp.extend_from_slice(&[0x10, 0, 0, 0]);
+    webp.extend_from_slice(b"WEBPVP8 ");
+    let cases: Vec<(&str, Vec<u8>, &str)> = vec![
+        ("a.png", png(), "image"),
+        ("a.jpg", vec![0xff, 0xd8, 0xff, 0xe0, 0, 0], "image"),
+        ("a.gif", b"GIF89a\0\0\0".to_vec(), "image"),
+        ("a.webp", webp, "image"),
+        ("a.ico", vec![0, 0, 1, 0, 1, 0, 0], "image"),
+        ("a.woff", b"wOFF\0\0\0\0".to_vec(), "font"),
+        ("a.woff2", b"wOF2\0\0\0\0".to_vec(), "font"),
+        ("a.ttf", vec![0, 1, 0, 0, 0, 1, 0, 0], "font"),
+        ("a.otf", b"OTTO\0\0\0\0".to_vec(), "font"),
+        ("elf.bin", elf, "exec"),
+        ("pe.bin", b"MZ\x90\0\x03\0\0\0".to_vec(), "exec"),
+        (
+            "macho.bin",
+            vec![0xcf, 0xfa, 0xed, 0xfe, 7, 0, 0, 1],
+            "exec",
+        ),
+        ("fat.bin", vec![0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 2], "exec"),
+        ("z.bin", b"PK\x03\x04\0\0\0\0".to_vec(), "archive"),
+        ("g.bin", vec![0x1f, 0x8b, 8, 0, 0, 0], "archive"),
+        ("r.bin", vec![0u8, 1, 2, 3, 4], "other"),
+    ];
+    for (name, bytes, want) in cases {
+        let sigs = run(&[(name, bytes)]);
+        assert_eq!(magic_of(&sigs, name), want, "{name}");
+    }
+}
+
+#[test]
+fn executable_disguised_as_image_or_font_is_a_mismatch() {
+    let sigs = run(&[
+        ("assets/logo.png", vec![0x7f, b'E', b'L', b'F', 2, 1, 1, 0]),
+        ("assets/font.woff2", b"MZ\x90\0\x03\0\0\0".to_vec()),
+        ("assets/real.png", png()),
+    ]);
+    assert_eq!(magic_of(&sigs, "assets/logo.png"), "exec");
+    assert_eq!(magic_of(&sigs, "assets/font.woff2"), "exec");
+    let mism: Vec<&str> = with(&sigs, "extension_mismatch")
+        .iter()
+        .map(|s| s.locations[0].file.as_str())
+        .collect();
+    assert!(mism.contains(&"assets/logo.png"));
+    assert!(mism.contains(&"assets/font.woff2"));
+    assert!(!mism.contains(&"assets/real.png"));
 }

@@ -139,9 +139,16 @@ rules:
     severity: low
     title: Image or font file
     signal: Hidden
-    where: {pattern: "binary_file", ext: "png|jpg|jpeg|gif|webp|ico|svg|woff|woff2|ttf|otf"}
-    explain: The skill ships an image or font. These are common, but their content was not analyzed.
+    where: {pattern: "binary_file", magic: "image|font"}
+    explain: The skill ships an image or font whose first bytes match that format. These are common, but their content was not analyzed.
     advice: No action needed for ordinary assets.
+  - id: hidden.executable-binary
+    severity: high
+    title: Executable program file
+    signal: Hidden
+    where: {pattern: "binary_file", magic: "exec"}
+    explain: The file starts with the header of a native executable (ELF, Windows PE or Mach-O), whatever its name says. A skill has no reason to ship a compiled program that cannot be reviewed.
+    advice: Remove the file, or build it from source you have reviewed.
   - id: hidden.minified-file
     severity: low
     title: Minified file
@@ -302,6 +309,13 @@ rules:
     where: {to: "exec"}
     explain: Data from a sensitive source is passed to a program or shell command.
     advice: Check what the command does with it.
+  - id: exec.secret-to-command
+    severity: high
+    title: Credential data is passed to a command
+    signal: TaintFlow
+    where: {from: "secret_file|browser_store|wallet|keychain", to: "exec"}
+    explain: Data read from a credential file, browser profile, wallet or keychain is passed to a program or shell command, for example curl, which can send it away.
+    advice: Do not use the skill until the command and its target are explained.
   - id: exec.tainted-eval
     severity: high
     title: Sensitive data is evaluated as code

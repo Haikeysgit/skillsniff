@@ -370,7 +370,51 @@ fn has_script_extension(path: &str) -> bool {
     }
 }
 
-fn file_flags(f: &FileEntry, out: &mut Vec<Signal>) {
+/// Class of a binary file judged by its first bytes, never by its name.
+fn magic_class(head: &[u8]) -> &'static str {
+    let starts = |p: &[u8]| head.starts_with(p);
+    if starts(b"\x7fELF")
+        || starts(b"MZ")
+        || starts(&[0xFE, 0xED, 0xFA, 0xCE])
+        || starts(&[0xFE, 0xED, 0xFA, 0xCF])
+        || starts(&[0xCE, 0xFA, 0xED, 0xFE])
+        || starts(&[0xCF, 0xFA, 0xED, 0xFE])
+        || starts(&[0xCA, 0xFE, 0xBA, 0xBE])
+        || starts(&[0xBE, 0xBA, 0xFE, 0xCA])
+    {
+        "exec"
+    } else if starts(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A])
+        || starts(&[0xFF, 0xD8, 0xFF])
+        || starts(b"GIF87a")
+        || starts(b"GIF89a")
+        || (starts(b"RIFF") && head.get(8..12) == Some(b"WEBP"))
+        || starts(&[0, 0, 1, 0])
+        || (starts(b"BM") && head.len() >= 10 && head[6..10] == [0, 0, 0, 0])
+    {
+        "image"
+    } else if starts(b"wOFF") || starts(b"wOF2") || starts(&[0, 1, 0, 0]) || starts(b"OTTO") {
+        "font"
+    } else if starts(b"PK")
+        || starts(&[0x1F, 0x8B])
+        || starts(&[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C])
+        || starts(b"Rar!")
+    {
+        "archive"
+    } else {
+        "other"
+    }
+}
+
+/// Class a file name promises, for image and font extensions.
+fn expected_class(ext: &str) -> Option<&'static str> {
+    match ext {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico" | "bmp" => Some("image"),
+        "woff" | "woff2" | "ttf" | "otf" => Some("font"),
+        _ => None,
+    }
+}
+
+fn file_flags(ctx: &ScanContext, f: &FileEntry, out: &mut Vec<Signal>) {
     if f.content_type == ContentType::Binary {
         let ext = f
             .path
@@ -379,6 +423,9 @@ fn file_flags(f: &FileEntry, out: &mut Vec<Signal>) {
             .and_then(|name| name.rsplit_once('.'))
             .map(|(_, e)| e.to_ascii_lowercase())
             .unwrap_or_default();
+        let magic = ctx
+            .read_bytes(&f.path)
+            .map_or("other", |b| magic_class(&b[..b.len().min(16)]));
         out.push(with_fields(
             signal(
                 "binary_file",
@@ -386,8 +433,16 @@ fn file_flags(f: &FileEntry, out: &mut Vec<Signal>) {
                 0,
                 "file content is binary".to_string(),
             ),
-            &[("ext", &ext)],
+            &[("ext", &ext), ("magic", magic)],
         ));
+        if expected_class(&ext).is_some_and(|want| want != magic) {
+            out.push(signal(
+                "extension_mismatch",
+                &f.path,
+                0,
+                format!("name says {ext} but the content looks like {magic}"),
+            ));
+        }
         if has_script_extension(&f.path) {
             out.push(signal(
                 "extension_mismatch",
@@ -423,7 +478,7 @@ impl Analyzer for HiddenAnalyzer {
     fn run(&self, ctx: &ScanContext) -> AnalyzerOutput {
         let mut signals = Vec::new();
         for f in &ctx.inventory.files {
-            file_flags(f, &mut signals);
+            file_flags(ctx, f, &mut signals);
             if f.content_type == ContentType::Text
                 && let Some(text) = ctx.read_text(&f.path)
             {

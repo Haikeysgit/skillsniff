@@ -2,9 +2,10 @@
 //!
 //! A rule matches a signal when the kinds are equal and every `where` entry
 //! equals the signal field of the same name. A `where` value may list
-//! alternatives separated by `|`. When several rules match one signal, only
-//! the most specific one (most `where` entries, then highest severity, then
-//! pack order) produces a finding, so each signal yields exactly one finding.
+//! alternatives separated by `|`. Among the built-in rules the most specific
+//! one (most `where` entries, then highest severity, then pack order) wins.
+//! Extra rules are handled separately so they can add findings but never
+//! hide or lower a built-in one.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -19,7 +20,7 @@ const MAX_RULE_FILE_BYTES: u64 = 512 * 1024;
 /// Most rule files read from one directory.
 const MAX_RULE_FILES: usize = 64;
 
-const CORE_PACK: &str = include_str!("../../../rules/core.yaml");
+const CORE_PACK: &str = include_str!("../rules/core.yaml");
 
 /// One detection rule.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +40,8 @@ pub struct Rule {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RulePack {
     pub version: String,
+    /// Rules before this index are built in; the rest were added by the user.
+    pub builtin_count: usize,
     pub rules: Vec<Rule>,
 }
 
@@ -110,7 +113,11 @@ fn parse_pack(text: &str, need_version: bool) -> Result<RulePack, String> {
             return Err(format!("duplicate rule id {}", r.id));
         }
     }
-    Ok(RulePack { version, rules })
+    Ok(RulePack {
+        version,
+        builtin_count: rules.len(),
+        rules,
+    })
 }
 
 /// The rule pack shipped with the tool.
@@ -165,6 +172,7 @@ pub fn load_extra(dir: &Path) -> Result<Vec<Rule>, String> {
 /// Adds `extra` rules to `builtin`. An extra rule that reuses an existing id
 /// is an error: extras add, they never replace.
 pub fn merge(mut builtin: RulePack, extra: Vec<Rule>) -> Result<RulePack, String> {
+    builtin.builtin_count = builtin.builtin_count.min(builtin.rules.len());
     let mut ids: BTreeSet<String> = builtin.rules.iter().map(|r| r.id.clone()).collect();
     for r in extra {
         if !ids.insert(r.id.clone()) {
@@ -184,38 +192,58 @@ fn matches(rule: &Rule, s: &Signal) -> bool {
         })
 }
 
-/// One finding per signal, from the most specific matching rule. Signals no
-/// rule matches produce nothing. Evidence and file names are sanitized.
+fn make_finding(r: &Rule, s: &Signal) -> Finding {
+    Finding {
+        rule: r.id.clone(),
+        severity: r.severity,
+        title: r.title.clone(),
+        locations: s
+            .locations
+            .iter()
+            .map(|l| Location {
+                file: sanitize_evidence(&l.file),
+                line: l.line,
+            })
+            .collect(),
+        evidence: sanitize_evidence(&s.evidence),
+        explain: r.explain.clone(),
+        advice: r.advice.clone(),
+        source: FindingSource::Engine,
+        suppressed: false,
+    }
+}
+
+/// Findings for `signals`. For each signal, the most specific built-in rule
+/// that matches is reported. The most specific extra rule is reported as well,
+/// but only when its severity is at least the built-in one and its id
+/// differs, so an extra rule can never lower a built-in result. A signal only
+/// extra rules match gets the extra rule's finding. Evidence and file names
+/// are sanitized.
 pub fn apply(pack: &RulePack, signals: &[Signal]) -> Vec<Finding> {
-    let mut out = Vec::new();
-    for s in signals {
-        let best = pack
-            .rules
+    let split = pack.builtin_count.min(pack.rules.len());
+    let (core, extra) = pack.rules.split_at(split);
+    let best = |rules: &'_ [Rule], s: &Signal| {
+        rules
             .iter()
             .enumerate()
             .filter(|(_, r)| matches(r, s))
-            .max_by_key(|(i, r)| (r.r#where.len(), r.severity, std::cmp::Reverse(*i)));
-        let Some((_, r)) = best else {
-            continue;
-        };
-        out.push(Finding {
-            rule: r.id.clone(),
-            severity: r.severity,
-            title: r.title.clone(),
-            locations: s
-                .locations
-                .iter()
-                .map(|l| Location {
-                    file: sanitize_evidence(&l.file),
-                    line: l.line,
-                })
-                .collect(),
-            evidence: sanitize_evidence(&s.evidence),
-            explain: r.explain.clone(),
-            advice: r.advice.clone(),
-            source: FindingSource::Engine,
-            suppressed: false,
-        });
+            .max_by_key(|(i, r)| (r.r#where.len(), r.severity, std::cmp::Reverse(*i)))
+            .map(|(_, r)| r.clone())
+    };
+    let mut out = Vec::new();
+    for s in signals {
+        let core_rule = best(core, s);
+        let extra_rule = best(extra, s);
+        match (core_rule, extra_rule) {
+            (Some(c), Some(e)) => {
+                out.push(make_finding(&c, s));
+                if e.severity >= c.severity && e.id != c.id {
+                    out.push(make_finding(&e, s));
+                }
+            }
+            (Some(r), None) | (None, Some(r)) => out.push(make_finding(&r, s)),
+            (None, None) => {}
+        }
     }
     out
 }
