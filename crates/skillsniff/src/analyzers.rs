@@ -214,3 +214,16 @@ pub(crate) fn unreadable_signal(file: &str) -> Signal {
         evidence: "file could not be read for analysis (over the size limit)".to_string(),
     }
 }
+
+/// Signal for a file only partly checked because the time budget ran out.
+pub(crate) fn budget_signal(file: &str, secs: u64) -> Signal {
+    Signal {
+        kind: crate::model::signal::HIDDEN.to_string(),
+        fields: BTreeMap::from([("pattern".to_string(), "parse_budget_exceeded".to_string())]),
+        locations: vec![crate::model::Location {
+            file: file.to_string(),
+            line: 1,
+        }],
+        evidence: format!("analysis stopped after {secs}s; file only partly checked"),
+    }
+}

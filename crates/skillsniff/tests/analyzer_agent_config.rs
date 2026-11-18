@@ -263,3 +263,89 @@ fn declared_targets_cover_every_emitted_value() {
         ]
     );
 }
+
+fn md(body: &str) -> String {
+    format!("{SKILL_MD}{body}\n")
+}
+
+#[test]
+fn soft_documentation_lines_do_not_fire() {
+    for line in [
+        "Creates ~/.claude/settings.json on first run.",
+        "See .claude/settings.json for options (add a key).",
+        "edit `~/.claude/settings.json` and add the permissions block",
+        "Update your .zshrc to add the alias.",
+        "Add a cron entry to /etc/crontab",
+        "Use `git config core.hooksPath` to see hooks",
+    ] {
+        expect_none_with_skill(&md(line));
+    }
+}
+
+fn expect_none_with_skill(skill_md: &str) {
+    let sigs = run_files(&[("SKILL.md", skill_md)]);
+    assert!(sigs.is_empty(), "{skill_md:?} -> {sigs:?}");
+}
+
+#[test]
+fn strong_prose_verb_fires_with_prose_context() {
+    let sigs = run_files(&[(
+        "SKILL.md",
+        &md("This skill will overwrite ~/.claude/settings.json"),
+    )]);
+    let s = sigs.iter().find(|s| target(s) == "agent_settings").unwrap();
+    assert_eq!(s.fields.get("context").unwrap(), "prose");
+}
+
+#[test]
+fn script_hits_carry_code_context() {
+    let sigs = run_files(&[("a.sh", "echo x >> ~/.bashrc\n")]);
+    assert_eq!(sigs[0].fields.get("context").unwrap(), "code");
+    let sigs = run_files(&[(".claude/settings.json", "{}")]);
+    assert_eq!(sigs[0].fields.get("context").unwrap(), "code");
+}
+
+#[test]
+fn git_config_read_is_not_a_write() {
+    expect_none(&[(
+        "a.sh",
+        "dir=$(git config core.hooksPath)\ngit config --get core.hooksPath\n",
+    )]);
+    expect(
+        &[("a.sh", "git config --unset core.hooksPath\n")],
+        "git_hooks",
+    );
+}
+
+#[test]
+fn unrelated_command_near_a_path_does_not_fire() {
+    expect_none(&[("a.sh", "cat ~/.bashrc\n# note\ncp a b\n")]);
+    expect_none(&[("a.sh", "source ~/.bashrc\ncp x y\necho done\n")]);
+    expect_none(&[(
+        "a.py",
+        "rc = os.path.expanduser('~/.bashrc')\nprint(open(rc).read())\nshutil.copy('a', 'b')\n",
+    )]);
+}
+
+#[test]
+fn variable_holding_a_path_is_tracked_to_its_write() {
+    expect(
+        &[("a.sh", "P=~/.bashrc\nls\necho x >> \"$P\"\n")],
+        "shell_profile",
+    );
+    let sigs = run_files(&[("a.sh", "P=~/.bashrc\nls\necho x >> \"$P\"\n")]);
+    assert_eq!(sigs[0].locations[0].line, 3);
+    expect(
+        &[(
+            "a.ps1",
+            "$p = \"$HOME/.zshrc\"\nAdd-Content -Path $p -Value x\n",
+        )],
+        "shell_profile",
+    );
+}
+
+#[test]
+fn copy_destination_must_be_the_guarded_path() {
+    expect_none(&[("a.sh", "cp ~/.bashrc ./backup\n")]);
+    expect(&[("a.sh", "cp ./mine ~/.bashrc\n")], "shell_profile");
+}

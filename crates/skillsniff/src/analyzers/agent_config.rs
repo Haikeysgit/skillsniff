@@ -36,8 +36,6 @@ pub const AGENT_CONFIG_TARGETS: &[&str] = &[
     "suppression_file",
 ];
 
-/// Lines of script around a path that may hold the write.
-const SCRIPT_WINDOW: usize = 4;
 /// Deepest JSON nesting searched for settings keys.
 const MAX_JSON_DEPTH: usize = 64;
 
@@ -148,71 +146,87 @@ const SPECS: &[Spec] = &[
     },
 ];
 
-/// Commands and functions that write, matched as whole words.
-const CODE_WORDS: &[&str] = &[
+/// Lines after an assignment in which the variable may be used as a write
+/// target (`P=~/.bashrc; echo x >> "$P"`).
+const VAR_WINDOW: usize = 12;
+
+/// Commands whose last argument is the destination.
+const LAST_ARG_CMDS: &[&str] = &[
     "cp",
     "mv",
-    "tee",
+    "install",
     "ln",
-    "set-content",
-    "out-file",
-    "add-content",
-    "new-item",
     "copy-item",
     "move-item",
-    "rename-item",
+    "copy",
+    "move",
     "xcopy",
     "robocopy",
+    "rsync",
+];
+
+/// Commands that write to the first non-flag argument or to `-Path`.
+const FIRST_ARG_CMDS: &[&str] = &[
+    "set-content",
+    "add-content",
+    "out-file",
+    "new-item",
+    "set-itemproperty",
+    "new-itemproperty",
+    "rename-item",
+];
+
+/// Commands that take an output file after `-o` style flags.
+const OUTPUT_FLAG_CMDS: &[&str] = &["curl", "wget", "invoke-webrequest", "iwr"];
+
+const PATH_FLAGS: &[&str] = &[
+    "-path",
+    "-filepath",
+    "-literalpath",
+    "-destination",
+    "-o",
+    "-outfile",
+    "--output",
+];
+
+/// Calls that write to the path named before or after them on the line.
+const CALL_WORDS: &[&str] = &[
     "writefile",
     "writefilesync",
     "appendfile",
     "appendfilesync",
-    "write_text",
-    "write_bytes",
     "copyfile",
     "copyfilesync",
-    "set-itemproperty",
-    "new-itemproperty",
-];
-
-/// Multi-word writes, matched from a word start.
-const CODE_PHRASES: &[&str] = &[
-    "sed -i",
-    "reg add",
-    "reg.exe add",
     "shutil.copy",
+    "shutil.copyfile",
     "shutil.move",
-    "git config",
-    "curl -o",
-    "wget -o",
+    "os.rename",
+    "os.replace",
 ];
 
-/// Verbs in prose or comments that describe a write.
-const PROSE_WORDS: &[&str] = &[
+/// Methods called on a path object, so the path comes first.
+const METHOD_WORDS: &[&str] = &["write_text", "write_bytes"];
+
+/// Words that hand the next command over (`then cp ...`, `sudo cp ...`).
+const WRAPPERS: &[&str] = &[
+    "sudo", "doas", "command", "env", "exec", "nohup", "time", "then", "do", "else", "if",
+];
+
+/// Prose verbs that clearly describe a write. Softer verbs (add, create,
+/// update, edit, insert) are left out: they describe reading docs as often
+/// as writing.
+const STRONG_PROSE: &[&str] = &[
     "write",
     "writes",
-    "writing",
     "append",
     "appends",
     "appending",
     "overwrite",
     "overwrites",
-    "modify",
-    "modifies",
-    "edit",
-    "edits",
-    "patch",
-    "patches",
     "inject",
     "injects",
-    "insert",
-    "inserts",
-    "add",
-    "adds",
-    "create",
-    "creates",
-    "update",
-    "updates",
+    "modify",
+    "modifies",
 ];
 
 const NEGATIONS: &[&str] = &["not", "never", "n't", "without", "cannot", "no"];
@@ -243,10 +257,6 @@ fn find_all(line: &str, needle: &str) -> Vec<usize> {
     out
 }
 
-fn has_word(line: &str, words: &[&str]) -> bool {
-    words.iter().any(|w| !find_all(line, w).is_empty())
-}
-
 fn negated(line: &str, at: usize) -> bool {
     let before = line[..at].trim_end();
     NEGATIONS.iter().any(|n| {
@@ -258,25 +268,30 @@ fn negated(line: &str, at: usize) -> bool {
     })
 }
 
-fn has_prose_verb(line: &str) -> bool {
-    PROSE_WORDS
+fn has_strong_prose_verb(line: &str) -> bool {
+    STRONG_PROSE
         .iter()
         .flat_map(|w| find_all(line, w))
         .any(|at| !negated(line, at))
 }
 
-/// `open(..., "w")`, `"a"`, `"x"` or `"r+"` style calls.
-fn open_for_write(line: &str) -> bool {
-    find_all(line, "open(").into_iter().any(|at| {
-        let rest = &line[at + 5..];
-        rest.match_indices(['"', '\'']).any(|(i, q)| {
-            let before = rest[..i].trim_end();
-            let mode = &rest[i + 1..];
-            (before.ends_with(',') || before.ends_with("mode="))
-                && (mode.starts_with(['w', 'a', 'x']) || mode.starts_with("r+"))
-                && !mode.starts_with(q)
-        })
+/// Whether the text after an `open(` call opens a file for writing.
+fn open_mode_writes(rest: &str) -> bool {
+    rest.match_indices(['"', '\'']).any(|(i, q)| {
+        let before = rest[..i].trim_end();
+        let mode = &rest[i + 1..];
+        (before.ends_with(',') || before.ends_with("mode="))
+            && (mode.starts_with(['w', 'a', 'x']) || mode.starts_with("r+"))
+            && !mode.starts_with(q)
     })
+}
+
+/// The path at `at` sits inside an `open(.., "w"|"a")` call.
+fn inside_open_write(line: &str, at: usize) -> bool {
+    find_all(line, "open(")
+        .into_iter()
+        .filter(|&o| o < at)
+        .any(|o| open_mode_writes(&line[o + 5..]))
 }
 
 /// Whether the text just before `idx` is a `>` or `>>` redirect.
@@ -289,11 +304,117 @@ fn redirected(line: &str, idx: usize) -> bool {
     !b.trim_end_matches('>').trim().is_empty()
 }
 
-/// A write that does not depend on where the path sits in the line.
-fn code_write(line: &str) -> bool {
-    has_word(line, CODE_WORDS)
-        || CODE_PHRASES.iter().any(|p| !find_all(line, p).is_empty())
-        || open_for_write(line)
+fn clean_token(t: &str) -> &str {
+    t.trim_matches(|c| matches!(c, '"' | '\'' | '`' | '(' | ')'))
+}
+
+/// Whether the path at `at` is the target or destination of a write in the
+/// same command: a redirect, the last argument of a copy, a `tee` argument,
+/// the path argument of `Set-Content` and friends, or a path passed to an
+/// open-for-write or write-file call.
+fn is_write_target(line: &str, at: usize) -> bool {
+    if redirected(line, at) || inside_open_write(line, at) {
+        return true;
+    }
+    if CALL_WORDS
+        .iter()
+        .any(|w| !find_all(&line[..at], w).is_empty())
+        || METHOD_WORDS.iter().any(|w| !find_all(line, w).is_empty())
+    {
+        return true;
+    }
+    let before = &line[..at];
+    let tok_start = before
+        .char_indices()
+        .rev()
+        .find(|(_, c)| c.is_whitespace())
+        .map_or(0, |(i, c)| i + c.len_utf8());
+    let seg_start = before[..tok_start]
+        .char_indices()
+        .rev()
+        .find(|(_, c)| "|;&`(".contains(*c))
+        .map_or(0, |(i, c)| i + c.len_utf8());
+    let mut words: Vec<&str> = before[seg_start..tok_start]
+        .split_whitespace()
+        .map(clean_token)
+        .filter(|t| !t.is_empty())
+        .collect();
+    while words.first().is_some_and(|w| WRAPPERS.contains(w)) {
+        words.remove(0);
+    }
+    let Some(&first) = words.first() else {
+        return false;
+    };
+    let cmd = first.rsplit('/').next().unwrap_or(first);
+    let args = &words[1..];
+    let prev = args.last().copied().unwrap_or("");
+    let end = line[at..]
+        .find(char::is_whitespace)
+        .map_or(line.len(), |i| at + i);
+    let tail = &line[end..];
+    let tail = &tail[..tail
+        .find(['|', ';', '&', '<', '>', '`', ')'])
+        .unwrap_or(tail.len())];
+    let last_arg = tail
+        .split_whitespace()
+        .all(|t| t.starts_with('-') || t.chars().all(|c| c.is_ascii_digit()));
+    if LAST_ARG_CMDS.contains(&cmd) {
+        return last_arg;
+    }
+    if cmd == "sed" {
+        return args.iter().any(|a| a.starts_with("-i")) && last_arg;
+    }
+    if cmd == "tee" {
+        return true;
+    }
+    if FIRST_ARG_CMDS.contains(&cmd) {
+        return PATH_FLAGS.contains(&prev) || args.iter().all(|a| a.starts_with('-'));
+    }
+    if OUTPUT_FLAG_CMDS.contains(&cmd) {
+        return PATH_FLAGS.contains(&prev);
+    }
+    (cmd == "reg" || cmd == "reg.exe") && args == ["add"]
+}
+
+/// `git config core.hookspath` writes only when it sets or unsets a value.
+fn git_sets(line: &str, end: usize) -> bool {
+    if ["--unset", "--add", "--replace-all"]
+        .iter()
+        .any(|f| line.contains(f))
+    {
+        return true;
+    }
+    line[end..]
+        .split_whitespace()
+        .next()
+        .is_some_and(|t| !t.starts_with(['`', '-', ')', ';', '|', '&', '<', '>']) && !t.is_empty())
+}
+
+/// Name of the variable that `at` is assigned to on this line, if any.
+fn assigned_name(line: &str, at: usize) -> Option<String> {
+    let before = &line[..at];
+    let eq = before.rfind('=')?;
+    if before[..eq].ends_with(['=', '!', '<', '>']) {
+        return None;
+    }
+    let lhs = before[..eq].trim_end_matches([' ', ':']);
+    let name: String = lhs
+        .chars()
+        .rev()
+        .take_while(|&c| is_word_char(c))
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    (!name.is_empty()).then_some(name)
+}
+
+/// What kind of file the text came from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Script,
+    Config,
+    Prose,
 }
 
 fn normalize_line(line: &str) -> String {
@@ -372,12 +493,16 @@ fn is_suppression_name(name: &str) -> bool {
         || stem == "suppressions.yml")
 }
 
-/// Per-file hits: (line, target) -> evidence.
-type Hits = BTreeMap<(u32, &'static str), String>;
+/// Per-file hits: (line, target) -> (context, evidence).
+type Hits = BTreeMap<(u32, &'static str), (&'static str, String)>;
+
+fn add_ctx(hits: &mut Hits, line: u32, target: &'static str, ctx: &'static str, evidence: &str) {
+    hits.entry((line, target))
+        .or_insert_with(|| (ctx, safe_evidence(evidence.trim())));
+}
 
 fn add(hits: &mut Hits, line: u32, target: &'static str, evidence: &str) {
-    hits.entry((line, target))
-        .or_insert_with(|| safe_evidence(evidence.trim()));
+    add_ctx(hits, line, target, "code", evidence);
 }
 
 /// Settings files the skill ships, and the keys inside them.
@@ -438,57 +563,78 @@ fn scan_shipped(path: &str, role: FileRole, text: Option<&str>, hits: &mut Hits)
 }
 
 /// Writes to guarded paths in any text.
-fn scan_writes(text: &str, is_script: bool, hits: &mut Hits) {
+///
+/// Scripts and config files count only a write whose target is the guarded
+/// path. Prose also counts a clear write verb on the same line.
+fn scan_writes(text: &str, kind: Kind, hits: &mut Hits) {
+    let ctx = if kind == Kind::Prose { "prose" } else { "code" };
     let raw: Vec<&str> = text.split('\n').collect();
-    let lines: Vec<String> = text
-        .split('\n')
+    let lines: Vec<String> = raw
+        .iter()
         .map(|l| normalize_line(l.strip_suffix('\r').unwrap_or(l)))
         .collect();
+    let mut vars: Vec<(usize, String, &'static str)> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
         let n = i as u32 + 1;
         let shown = raw[i];
-        let same_line_write = || code_write(line) || line.contains(">>") || has_prose_verb(line);
-        let window_write = || {
-            let lo = i.saturating_sub(SCRIPT_WINDOW);
-            let hi = (i + SCRIPT_WINDOW + 1).min(lines.len());
-            lines[lo..hi]
-                .iter()
-                .any(|l| code_write(l) || l.contains(">>"))
-        };
         for spec in SPECS {
             if spec.commands.iter().any(|c| !find_all(line, c).is_empty()) {
-                add(hits, n, spec.target, shown);
+                add_ctx(hits, n, spec.target, ctx, shown);
             }
-            let at: Vec<usize> = spec.paths.iter().flat_map(|p| find_all(line, p)).collect();
-            if at.is_empty() {
-                continue;
-            }
-            let writes = at.iter().any(|&a| redirected(line, a))
-                || same_line_write()
-                || (is_script && window_write());
-            if !writes {
-                continue;
-            }
-            add(hits, n, spec.target, shown);
-            if spec.target == "agent_settings" {
-                for (needle, target) in [
-                    ("hooks", "hooks"),
-                    ("permissions", "permissions"),
-                    ("mcpservers", "mcp_config"),
-                ] {
-                    if line.contains(&format!("\"{needle}\"")) {
-                        add(hits, n, target, shown);
+            for p in spec.paths {
+                for a in find_all(line, p) {
+                    let writes = if *p == "core.hookspath" {
+                        git_sets(line, a + p.len())
+                    } else {
+                        is_write_target(line, a)
+                            || (kind == Kind::Prose && has_strong_prose_verb(line))
+                    };
+                    if !writes {
+                        if kind == Kind::Script
+                            && *p != "core.hookspath"
+                            && let Some(name) = assigned_name(line, a)
+                        {
+                            vars.push((i, name, spec.target));
+                        }
+                        continue;
+                    }
+                    add_ctx(hits, n, spec.target, ctx, shown);
+                    if spec.target == "agent_settings" {
+                        for (needle, target) in [
+                            ("hooks", "hooks"),
+                            ("permissions", "permissions"),
+                            ("mcpservers", "mcp_config"),
+                        ] {
+                            if line.contains(&format!("\"{needle}\"")) {
+                                add_ctx(hits, n, target, ctx, shown);
+                            }
+                        }
                     }
                 }
             }
         }
     }
+    for (i, name, target) in vars {
+        let hi = (i + VAR_WINDOW + 1).min(lines.len());
+        for j in i..hi {
+            if find_all(&lines[j], &name)
+                .into_iter()
+                .any(|a| is_write_target(&lines[j], a))
+            {
+                add_ctx(hits, j as u32 + 1, target, ctx, raw[j]);
+                break;
+            }
+        }
+    }
 }
 
-fn signal(target: &str, file: &str, line: u32, evidence: String) -> Signal {
+fn signal(target: &str, context: &str, file: &str, line: u32, evidence: String) -> Signal {
     Signal {
         kind: AGENT_CONFIG.to_string(),
-        fields: BTreeMap::from([("target".to_string(), target.to_string())]),
+        fields: BTreeMap::from([
+            ("target".to_string(), target.to_string()),
+            ("context".to_string(), context.to_string()),
+        ]),
         locations: vec![Location {
             file: file.to_string(),
             line,
@@ -512,10 +658,15 @@ impl Analyzer for AgentConfigAnalyzer {
             }
             if f.content_type == ContentType::Text {
                 let role = ctx.roles.get(&f.path).copied().unwrap_or(FileRole::Asset);
+                let kind = match role {
+                    FileRole::Script(_) => Kind::Script,
+                    FileRole::Config => Kind::Config,
+                    _ => Kind::Prose,
+                };
                 match read_lossy(ctx, &f.path) {
                     Some(text) => {
                         scan_shipped(&f.path, role, Some(&text), &mut hits);
-                        scan_writes(&text, matches!(role, FileRole::Script(_)), &mut hits);
+                        scan_writes(&text, kind, &mut hits);
                     }
                     None => {
                         scan_shipped(&f.path, role, None, &mut hits);
@@ -523,8 +674,8 @@ impl Analyzer for AgentConfigAnalyzer {
                     }
                 }
             }
-            for ((line, target), evidence) in hits {
-                signals.push(signal(target, &f.path, line, evidence));
+            for ((line, target), (context, evidence)) in hits {
+                signals.push(signal(target, context, &f.path, line, evidence));
             }
         }
         AnalyzerOutput {
