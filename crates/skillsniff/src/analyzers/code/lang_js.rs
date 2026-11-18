@@ -237,6 +237,22 @@ fn relevant(name: &str) -> bool {
         || last_segment(name) == "pipe"
 }
 
+/// Whether an alias meaning matters to the rules: a classified name, a
+/// client constructor, or a name under a module or global the rules know.
+fn alias_relevant(full: &str) -> bool {
+    let full = strip_global(full);
+    let root = full.split(['.', '(']).next().unwrap_or("");
+    relevant(full) || CLIENT_CONSTRUCTORS.contains(&full) || KNOWN_ROOTS.contains(&root)
+}
+
+/// Calls that hand their trailing arguments to the callback they take.
+fn passes_trailing_args(name: &str) -> bool {
+    matches!(
+        strip_global(name),
+        "setTimeout" | "setInterval" | "setImmediate" | "process.nextTick"
+    ) || matches!(last_segment(name), "reduce" | "reduceRight")
+}
+
 fn dots(name: &str) -> usize {
     name.matches('.').count()
 }
@@ -346,6 +362,8 @@ struct Extract<'t> {
     /// index, the name and its range. Dropped at the end when the name is a
     /// function.
     callback_firsts: Vec<(usize, String, (usize, usize))>,
+    /// Names bound to a value (not a function) anywhere in the file.
+    value_names: HashSet<String>,
 }
 
 impl<'t> Extract<'t> {
@@ -359,6 +377,7 @@ impl<'t> Extract<'t> {
             funcs: Vec::new(),
             fn_names: HashSet::new(),
             callback_firsts: Vec::new(),
+            value_names: HashSet::new(),
         }
     }
 
@@ -383,7 +402,7 @@ impl<'t> Extract<'t> {
                 break;
             }
             let inner = if node.kind() == "type_assertion" {
-                self.core.children(node).last().copied()
+                self.core.last_child(node)
             } else {
                 self.core.first_child(node)
             };
@@ -489,7 +508,7 @@ impl<'t> Extract<'t> {
                     cur = cur.child_by_field_name("constructor")?;
                 }
                 "sequence_expression" => {
-                    cur = self.core.children(cur).last().copied()?;
+                    cur = self.core.last_child(cur)?;
                 }
                 k if TRANSPARENT.contains(&k) => {
                     let inner = self.unwrap(cur);
@@ -592,11 +611,22 @@ impl<'t> Extract<'t> {
 
     fn bind(&mut self, targets: Vec<String>, rhs: Option<Node>, end: Option<usize>, line: u32) {
         let rhs_callee = rhs.and_then(|r| self.callee_of(self.unwrap(r)));
+        let function = rhs.is_some_and(|r| {
+            matches!(
+                self.unwrap(r).kind(),
+                "arrow_function" | "function_expression" | "return_statement"
+            )
+        });
+        if !function {
+            self.value_names.extend(targets.iter().cloned());
+        }
         self.core.bind(targets, rhs, end, line, rhs_callee);
     }
 
     fn alias(&mut self, local: &str, full: &str) {
-        self.core.add_alias(local, strip_global(full).to_string());
+        self.value_names.insert(local.to_string());
+        self.core
+            .add_alias(local, strip_global(full).to_string(), alias_relevant);
     }
 
     /// First pass. Returns false when the time budget ran out.
@@ -694,6 +724,12 @@ impl<'t> Extract<'t> {
             }
             _ => None,
         };
+        let params = node
+            .child_by_field_name("parameters")
+            .or_else(|| node.child_by_field_name("parameter"))
+            .map(|p| self.targets(p))
+            .unwrap_or_default();
+        self.value_names.extend(params);
         self.funcs.push((bound, node.end_byte()));
     }
 
@@ -721,16 +757,25 @@ impl<'t> Extract<'t> {
     /// value (the path of `fs.readFile(path, cb)`). They never take taint
     /// from other arguments (the data of `fs.writeFile(path, data, cb)`),
     /// from sibling callbacks, or from a first argument that names a
-    /// function. `import("m").then(cb)` makes `cb`'s first parameter an
+    /// function. `setTimeout`, `setInterval`, `setImmediate`,
+    /// `process.nextTick` and `reduce`/`reduceRight` also pass their later
+    /// arguments. `import("m").then(cb)` makes `cb`'s first parameter an
     /// alias of module `m`.
     fn call(&mut self, node: Node<'t>, ln: u32) {
         let callee = self.callee_of(node);
+        let method = node
+            .child_by_field_name("function")
+            .filter(|f| f.kind() == "member_expression")
+            .and_then(|f| f.child_by_field_name("property"))
+            .map(|p| self.text(p));
+        let trailing = callee.as_deref().is_some_and(passes_trailing_args)
+            || matches!(method, Some("reduce" | "reduceRight"));
         let args = node.child_by_field_name("arguments");
         self.core.add_call(node, callee, args);
         let Some(args) = args.filter(|a| a.kind() == "arguments") else {
             return;
         };
-        let args = self.core.children(args);
+        let args = self.core.children_upto(args, usize::MAX);
         let is_fn = |a: &Node| matches!(a.kind(), "arrow_function" | "function_expression");
         let callbacks: Vec<Node<'t>> = args.iter().copied().filter(is_fn).collect();
         let Some(first_cb) = callbacks.first().copied() else {
@@ -765,6 +810,13 @@ impl<'t> Extract<'t> {
         if let Some(a) = first {
             ranges.push((a.start_byte(), a.end_byte()));
         }
+        if trailing {
+            // `setTimeout(cb, ms, ...args)` and `reduce(cb, init)` hand their
+            // later arguments to the callback.
+            let later = args.iter().skip(1).filter(|a| !is_fn(a));
+            ranges.extend(later.map(|a| (a.start_byte(), a.end_byte())));
+        }
+        self.value_names.extend(params.iter().cloned());
         let id = self.core.calls.last().map(|c| c.id.clone());
         let before = self.core.binds.len();
         self.core.push_bind(Bind {
@@ -984,7 +1036,11 @@ impl<'t> Extract<'t> {
         let mut stack = vec![FoldItem::Node(node)];
         let mut steps = 0;
         let push_children = |stack: &mut Vec<FoldItem<'t>>, n: Node<'t>, sep: bool| {
-            let kids: Vec<Node<'t>> = self.core.children(n).into_iter().collect();
+            let kids: Vec<Node<'t>> = self
+                .core
+                .children_upto(n, MAX_FOLD_NODES)
+                .into_iter()
+                .collect();
             for (i, c) in kids.into_iter().enumerate().rev() {
                 stack.push(FoldItem::Node(c));
                 if sep && i > 0 {
@@ -1002,6 +1058,7 @@ impl<'t> Extract<'t> {
             };
             steps += 1;
             if steps > MAX_FOLD_NODES {
+                self.core.truncate();
                 break;
             }
             visited.insert(n.id());
@@ -1200,10 +1257,10 @@ impl<'t> Extract<'t> {
                 "string_fragment" | "escape_sequence" => out.push_str(self.text(n)),
                 "template_string" => {
                     literal = true;
-                    stack.extend(self.core.children(n).into_iter().rev());
+                    stack.extend(self.core.children_upto(n, MAX_FOLD_NODES).into_iter().rev());
                 }
                 "template_substitution" | "parenthesized_expression" => {
-                    stack.extend(self.core.children(n).into_iter().rev());
+                    stack.extend(self.core.children_upto(n, MAX_FOLD_NODES).into_iter().rev());
                 }
                 "binary_expression"
                     if n.child_by_field_name("operator").map(|o| o.kind()) == Some("+") =>
@@ -1386,6 +1443,7 @@ impl<'t> Extract<'t> {
         self.core.resolve_calls(CLIENT_CONSTRUCTORS, relevant);
         for (i, name, range) in std::mem::take(&mut self.callback_firsts) {
             if self.fn_names.contains(&name)
+                && !self.value_names.contains(&name)
                 && let Some(b) = self.core.binds.get_mut(i)
             {
                 b.ranges.retain(|r| *r != range);

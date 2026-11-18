@@ -186,6 +186,34 @@ impl<'t> Core<'t> {
         out
     }
 
+    /// Named children of `node` other than comments, for walks that bind
+    /// nothing (folding, scanning call arguments). At most `limit` are
+    /// returned and more mark the facts truncated; the walk spends the scan
+    /// budget. Pass `usize::MAX` for no limit.
+    pub fn children_upto<'n>(&self, node: Node<'n>, limit: usize) -> Vec<Node<'n>> {
+        let mut out = Vec::new();
+        let mut cursor = node.walk();
+        for c in node.named_children(&mut cursor) {
+            if !self.spend() {
+                break;
+            }
+            if c.kind() == "comment" {
+                continue;
+            }
+            if out.len() == limit {
+                self.truncate();
+                break;
+            }
+            out.push(c);
+        }
+        out
+    }
+
+    /// Last named child of `node` that is not a comment.
+    pub fn last_child<'n>(&self, node: Node<'n>) -> Option<Node<'n>> {
+        self.children_upto(node, usize::MAX).pop()
+    }
+
     /// First named child of `node` that is not a comment.
     pub fn first_child<'n>(&self, node: Node<'n>) -> Option<Node<'n>> {
         let mut cursor = node.walk();
@@ -214,8 +242,13 @@ impl<'t> Core<'t> {
         false
     }
 
-    /// Records that `local` may stand for `full`.
-    pub fn add_alias(&mut self, local: &str, full: String) {
+    /// Records that `local` may stand for `full`. `relevant` tells meanings
+    /// the rules care about (sink or client modules and names) from the rest.
+    /// When a name already has [`MAX_RESOLUTIONS`] meanings, a relevant one
+    /// replaces an irrelevant one, and an irrelevant one is dropped: relevant
+    /// meanings are never evicted. Only a relevant meaning with no room left
+    /// marks the facts truncated.
+    pub fn add_alias(&mut self, local: &str, full: String, relevant: impl Fn(&str) -> bool) {
         if local == full {
             return;
         }
@@ -223,11 +256,17 @@ impl<'t> Core<'t> {
         if entry.contains(&full) {
             return;
         }
-        if entry.len() >= MAX_RESOLUTIONS {
-            self.truncated.set(true);
+        if entry.len() < MAX_RESOLUTIONS {
+            entry.push(full);
             return;
         }
-        entry.push(full);
+        if !relevant(&full) {
+            return;
+        }
+        match entry.iter().position(|e| !relevant(e)) {
+            Some(i) => entry[i] = full,
+            None => self.truncated.set(true),
+        }
     }
 
     /// Every name `name` may stand for once an imported alias or a network
