@@ -1,0 +1,17 @@
+# Changes to these paths need review from the maintainer.
+# For a security scanner, weakening a rule, adding a dependency or
+# changing CI matters more than most code changes.
+
+*                       @Haikeysgit
+
+/rules/                 @Haikeysgit
+/crates/skillsniff/src/analyzers/   @Haikeysgit
+/crates/skillsniff/src/score.rs     @Haikeysgit
+/crates/skillsniff/src/acquire/     @Haikeysgit
+/adapters/              @Haikeysgit
+/tests/fixtures/        @Haikeysgit
+/.github/               @Haikeysgit
+/deny.toml              @Haikeysgit
+/Cargo.toml             @Haikeysgit
+/Cargo.lock             @Haikeysgit
+/crates/*/Cargo.toml    @Haikeysgit

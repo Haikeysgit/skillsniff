@@ -131,7 +131,7 @@ skillsniff is being designed and built in public. There is no release yet. Insta
 
 ## Contributing
 
-Contributions are welcome, especially threat model reviews and examples of real malicious skill patterns. Read [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
+Code contributions open after the first release (v0.1). Until then, issues, threat model reviews and examples of real malicious skill patterns are very welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
 
 Found a security issue? Please report it privately. See [SECURITY.md](SECURITY.md).
 

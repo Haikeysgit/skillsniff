@@ -2,6 +2,9 @@
 
 Thanks for your interest. skillsniff is in early development, and the design is public in [`docs/specs`](docs/specs/2026-11-17-skillsniff-design.md).
 
+> [!NOTE]
+> Code pull requests open after the first release (v0.1). Until then, please contribute through issues.
+
 ## Ways to help right now
 
 - **Review the threat model.** If you work in security, read the design and open an issue with anything it misses.
