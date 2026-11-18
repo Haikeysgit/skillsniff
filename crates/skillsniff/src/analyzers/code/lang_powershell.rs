@@ -133,6 +133,65 @@ fn canonical(name: &str) -> &str {
         .map_or(name, |(_, full)| full)
 }
 
+/// Words of error-node text that stand where a command can start: at the
+/// start, after a newline, `|`, `;`, `(`, `{` or `&`, or after the `.`
+/// operator. Quoted text is skipped, and a word holding `\`, `/` or `.` is
+/// a path, not a command. Each word comes with its byte offset.
+fn command_words(text: &str) -> Vec<(usize, &str)> {
+    let mut out = Vec::new();
+    let mut at_command = true;
+    let mut quote: Option<char> = None;
+    let mut start: Option<usize> = None;
+    for (i, c) in text.char_indices().chain([(text.len(), '\n')]) {
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        let opens = matches!(c, '|' | ';' | '(' | '{' | '&' | '\n');
+        let quote_start = matches!(c, '\'' | '"');
+        if !(c.is_whitespace() || opens || quote_start || matches!(c, ')' | '}')) {
+            start.get_or_insert(i);
+            continue;
+        }
+        if let Some(s) = start.take() {
+            let word = &text[s..i];
+            if word == "." {
+                at_command = true;
+            } else {
+                if at_command && !word.contains(['\\', '/', '.']) {
+                    out.push((s, word));
+                }
+                at_command = false;
+            }
+        }
+        if opens {
+            at_command = true;
+        }
+        if quote_start {
+            quote = Some(c);
+            at_command = false;
+        }
+    }
+    out
+}
+
+/// Text with quoted parts removed.
+fn without_quoted(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut quote: Option<char> = None;
+    for c in text.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if matches!(c, '\'' | '"') => quote = Some(c),
+            None => out.push(c),
+        }
+    }
+    out
+}
+
 /// [`canonical`] of an owned name.
 fn canonical_owned(name: &str) -> String {
     canonical(name).to_string()
@@ -811,35 +870,26 @@ impl<'t> Walk<'t> {
         let text = self.text(node);
         let end = scope.cmd_end.max(node.end_byte());
         let base = line(node);
-        let mut start = None;
-        for (i, c) in text.char_indices().chain([(text.len(), ' ')]) {
-            let sep = c.is_whitespace() || matches!(c, '(' | ')' | ';' | '|' | '{' | '}');
-            match (start, sep) {
-                (None, false) => start = Some(i),
-                (Some(s), true) => {
-                    start = None;
-                    let name = canonical_owned(&command_key(&text[s..i]));
-                    let class = if NETWORK_COMMANDS.contains(&name.as_str()) {
-                        NETWORK
-                    } else if name == "invoke-expression" {
-                        EVAL
-                    } else if name == "start-process" {
-                        EXEC
-                    } else {
-                        continue;
-                    };
-                    let newlines = text[..s].matches('\n').count();
-                    self.err_sinks.push(ErrSink {
-                        node,
-                        class,
-                        range: (node.start_byte() + s, end),
-                        line: base.saturating_add(u32::try_from(newlines).unwrap_or(u32::MAX)),
-                    });
-                }
-                _ => {}
-            }
+        for (s, word) in command_words(text) {
+            let name = canonical_owned(&command_key(word));
+            let class = if NETWORK_COMMANDS.contains(&name.as_str()) {
+                NETWORK
+            } else if name == "invoke-expression" {
+                EVAL
+            } else if name == "start-process" {
+                EXEC
+            } else {
+                continue;
+            };
+            let newlines = text[..s].matches('\n').count();
+            self.err_sinks.push(ErrSink {
+                node,
+                class,
+                range: (node.start_byte() + s, end),
+                line: base.saturating_add(u32::try_from(newlines).unwrap_or(u32::MAX)),
+            });
         }
-        if runs_fetched_code(text) {
+        if runs_fetched_code(&without_quoted(text)) {
             self.err_sinks.push(ErrSink {
                 node,
                 class: DOWNLOAD_EXEC,

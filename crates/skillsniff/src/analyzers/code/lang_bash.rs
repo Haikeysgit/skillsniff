@@ -109,6 +109,8 @@ struct Cmd<'t> {
     /// Arguments a network client reads to authenticate but does not send
     /// (`ssh -i key`, `curl --cert file`).
     exclude: Vec<Node<'t>>,
+    /// Here-strings and input redirections written on the command itself.
+    own_inputs: Vec<Node<'t>>,
 }
 
 /// A command whose program is a variable (`$c args`).
@@ -955,17 +957,18 @@ impl<'t> Walk<'t> {
         let id = self.core.fresh_id('c');
         self.core.token(node, id.clone(), false);
 
-        let mut own_input = false;
+        let mut own_inputs = Vec::new();
         for r in redirects {
-            match r.kind() {
-                "herestring_redirect" => own_input = true,
-                "file_redirect" => {
-                    let reads = self.file_redirect(*r, node, Some(node), scope.input);
-                    own_input |= reads.is_some();
-                }
-                _ => {}
+            // Output redirections are recorded too; inputs feed the command.
+            let reads = r.kind() == "file_redirect"
+                && self
+                    .file_redirect(*r, node, Some(node), scope.input)
+                    .is_some();
+            if reads || r.kind() == "herestring_redirect" {
+                own_inputs.push(*r);
             }
         }
+        let own_input = !own_inputs.is_empty();
         let mut cmd = Cmd {
             node,
             id: id.clone(),
@@ -982,6 +985,7 @@ impl<'t> Walk<'t> {
             socket: false,
             code: Code::None,
             exclude: Vec::new(),
+            own_inputs,
         };
         if dynamic && let Some((n, _)) = words.get(idx) {
             // A computed program runs its own name: `$(curl …)`, `$X`.
@@ -1157,6 +1161,11 @@ impl<'t> Walk<'t> {
             "powershell" | "pwsh" | "cmd" => {
                 if let Some(class) = invocation_class(prog, &texts) {
                     cmd.class = Some(class);
+                    // `-Command` and `/c` text is shell code: every
+                    // substitution in it runs.
+                    if class == EXEC {
+                        cmd.code = Code::Nodes(rest.iter().map(|(n, _)| *n).collect());
+                    }
                 }
             }
             "security"
@@ -1201,13 +1210,77 @@ impl<'t> Walk<'t> {
             .add_source(cmd.node, KEYCHAIN, text, Some(cmd.id.clone()));
     }
 
-    /// Code word of `-c CODE`: only a word that is wholly an expansion or
-    /// substitution counts as fetched code; one interpolated into a larger
-    /// literal (`-c "print('$V')"`) does not.
-    fn code_word(&self, word: Option<&(Node<'t>, String)>) -> Code<'t> {
+    /// Code of a shell's `-c CODE`: every reference in the word runs as
+    /// code, since the shell expands each substitution into its script.
+    /// With no word after `-c` under `xargs`, stdin supplies the code.
+    fn shell_code(&self, cmd: &Cmd<'t>, word: Option<&(Node<'t>, String)>) -> Code<'t> {
         match word {
-            Some((n, _)) if self.is_dynamic(*n) => Code::Nodes(vec![*n]),
-            _ => Code::None,
+            Some((n, _)) => Code::Nodes(vec![*n]),
+            None if cmd.reads_input => Code::Input,
+            None => Code::None,
+        }
+    }
+
+    /// Code of an interpreter's `-c`/`-e CODE`: a word that is wholly an
+    /// expansion or substitution, or the expansions in it that sit outside
+    /// the interpreted language's own quotes (`-c "import os;$(curl …)"`).
+    /// A value inside them (`-c "print('$V')"`) is data. With no word after
+    /// the flag under `xargs`, stdin supplies the code.
+    fn interpreter_code(&self, cmd: &Cmd<'t>, word: Option<&(Node<'t>, String)>) -> Code<'t> {
+        let Some((node, _)) = word else {
+            return if cmd.reads_input {
+                Code::Input
+            } else {
+                Code::None
+            };
+        };
+        if self.is_dynamic(*node) {
+            return Code::Nodes(vec![*node]);
+        }
+        let mut quote: Option<char> = None;
+        let mut escaped = false;
+        let mut code = Vec::new();
+        let mut stack = vec![*node];
+        while let Some(n) = stack.pop() {
+            match n.kind() {
+                "string" | "concatenation" => {
+                    stack.extend(self.core.children_upto(n, usize::MAX).into_iter().rev());
+                }
+                "simple_expansion"
+                | "expansion"
+                | "command_substitution"
+                | "process_substitution" => {
+                    if quote.is_none() {
+                        code.push(n);
+                    }
+                }
+                kind => {
+                    let text = self.text(n);
+                    let text = if kind == "raw_string" {
+                        text.trim_matches('\'')
+                    } else {
+                        text
+                    };
+                    for ch in text.chars() {
+                        if escaped {
+                            escaped = false;
+                            continue;
+                        }
+                        match quote {
+                            Some(_) if ch == '\\' => escaped = true,
+                            Some(q) if ch == q => quote = None,
+                            Some(_) => {}
+                            None if matches!(ch, '\'' | '"' | '`') => quote = Some(ch),
+                            None => {}
+                        }
+                    }
+                }
+            }
+        }
+        if code.is_empty() {
+            Code::None
+        } else {
+            Code::Nodes(code)
         }
     }
 
@@ -1224,7 +1297,7 @@ impl<'t> Walk<'t> {
             }
             if is_shell_flag(t) {
                 cmd.class = Some(EXEC);
-                cmd.code = self.code_word(rest.get(i + 1));
+                cmd.code = self.shell_code(cmd, rest.get(i + 1));
                 cmd.fetch_pipe = rest
                     .get(i + 1)
                     .is_some_and(|(_, code)| pipes_download_to_shell(&spaced(code)));
@@ -1274,7 +1347,7 @@ impl<'t> Walk<'t> {
     ) {
         if let Some(i) = rest.iter().position(|(_, t)| flags.contains(&t.as_str())) {
             cmd.class = Some(EXEC);
-            cmd.code = self.code_word(rest.get(i + 1));
+            cmd.code = self.interpreter_code(cmd, rest.get(i + 1));
             return;
         }
         if rest.iter().any(|(_, t)| t == "-m") {
@@ -1411,7 +1484,13 @@ impl<'t> Walk<'t> {
     fn code_of(&self, c: &Cmd<'t>) -> Vec<String> {
         let mut refs = match &c.code {
             Code::None => Vec::new(),
-            Code::Input => self.input_names(c.input),
+            Code::Input => {
+                let mut refs = self.input_names(c.input);
+                for n in &c.own_inputs {
+                    refs.extend(self.core.node_refs(*n));
+                }
+                refs
+            }
             Code::All => self.core.node_refs(c.node),
             Code::Nodes(nodes) => nodes.iter().flat_map(|n| self.core.node_refs(*n)).collect(),
         };
@@ -1737,15 +1816,17 @@ fn spaced(text: &str) -> String {
     text.replace(IFS_SEP, " ")
 }
 
-/// Arguments of a network client that name the key, certificate or netrc
-/// file it authenticates with: read locally, not sent. A value shared with
-/// other words (after `$IFS` or brace splitting) is kept.
+/// Arguments of a network client that name the key or certificate it
+/// authenticates with: read locally, not sent. A netrc file is not among
+/// them, since its stored credentials go to the host. For rsync, an `-e`
+/// command is left out only when the identity options in it are the only
+/// secret paths it names. A value shared with other words (after `$IFS` or
+/// brace splitting) is kept.
 fn credential_options<'t>(prog: &str, rest: &[(Node<'t>, String)]) -> Vec<Node<'t>> {
     let with_value: &[&str] = match prog {
         "ssh" | "scp" | "sftp" => &["-i", "-F"],
         "rsync" => &["-e", "--rsh"],
         "curl" => &[
-            "--netrc-file",
             "--cacert",
             "--capath",
             "--cert",
@@ -1759,29 +1840,59 @@ fn credential_options<'t>(prog: &str, rest: &[(Node<'t>, String)]) -> Vec<Node<'
         _ => return Vec::new(),
     };
     let ssh = matches!(prog, "ssh" | "scp" | "sftp");
-    let identity = |v: &str| {
-        let v = v.to_ascii_lowercase();
-        v.starts_with("identityfile") || v.starts_with("certificatefile")
-    };
+    // An rsync remote-shell command is skipped only if it names no secret
+    // path besides its identity options.
+    let keep = |value: &str| prog == "rsync" && !only_identity_secrets(value);
     let mut picked = Vec::new();
     let mut i = 0;
     while let Some((n, t)) = rest.get(i) {
         let value = rest.get(i + 1);
         if with_value.contains(&t.as_str())
-            || (ssh && t == "-o" && value.is_some_and(|v| identity(&v.1)))
+            || (ssh && t == "-o" && value.is_some_and(|v| is_identity_option(&v.1)))
         {
-            picked.extend(value.map(|(v, _)| *v));
+            picked.extend(value.filter(|v| !keep(&v.1)).map(|(v, _)| *v));
             i += 2;
             continue;
         }
         let attached = with_value.iter().any(|o| {
             t.len() > o.len() && t.starts_with(o) && (o.len() == 2 || t.as_bytes()[o.len()] == b'=')
         });
-        if attached || (ssh && t.strip_prefix("-o").is_some_and(identity)) {
+        if (attached && !keep(t)) || (ssh && t.strip_prefix("-o").is_some_and(is_identity_option)) {
             picked.push(*n);
         }
         i += 1;
     }
     picked.retain(|p| rest.iter().filter(|(n, _)| n.id() == p.id()).count() == 1);
     picked
+}
+
+/// `IdentityFile=…` or `CertificateFile=…`, as given to `ssh -o`.
+fn is_identity_option(value: &str) -> bool {
+    let v = value.to_ascii_lowercase();
+    v.starts_with("identityfile") || v.starts_with("certificatefile")
+}
+
+/// Whether an ssh command line names secret paths only as identity options
+/// (`-i key`, `-F config`, `-o IdentityFile=key`).
+fn only_identity_secrets(command: &str) -> bool {
+    let words: Vec<&str> = command
+        .split(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+        .filter(|w| !w.is_empty())
+        .collect();
+    let mut rest = Vec::new();
+    let mut i = 0;
+    while let Some(w) = words.get(i) {
+        let next = words.get(i + 1).copied();
+        if matches!(*w, "-i" | "-F") || (*w == "-o" && next.is_some_and(is_identity_option)) {
+            i += 2;
+            continue;
+        }
+        let attached = (w.len() > 2 && (w.starts_with("-i") || w.starts_with("-F")))
+            || w.strip_prefix("-o").is_some_and(is_identity_option);
+        if !attached {
+            rest.push(*w);
+        }
+        i += 1;
+    }
+    literal_source_class(&rest.join(" ")).is_none()
 }

