@@ -24,7 +24,7 @@ pub const PROMPT_INJECTION: &[&str] = &[
     "you are now{40}(no rules|no restrictions|no limits|without rules|without restrictions|without limits|without any rules|without any restrictions)",
     "you are no longer (bound|restricted|limited|constrained|subject to)",
     "new instructions:",
-    "new system prompt:",
+    "new system prompt(:| -| –| —)",
     "override (the |your |all |any |)(system|safety|previous|prior) (prompt|instructions|rules|guidelines|policy)",
     "(system|developer) prompt override",
     "developer mode (enabled|activated|is on)",
@@ -45,6 +45,7 @@ pub const PERMISSION_BYPASS: &[&str] = &[
     r"bash\(*\)",
     "(do not|don't|never|no need to) ask (the user |)(before|prior to|first|each time|every time|while|when|if){40}( run| execut| install| delet| any | every | all )",
     "(do not|don't|never|no need to) ask (the user |)for (confirmation|permission|approval){40}( run| execut| install| delet| any | every | all )",
+    "(do not|don't|never|no need to) ask (the user |the user, |)(just |simply |and |then |instead |)(run |execute |install |delete |proceed |go ahead )",
     "without (asking|prompting) (the user|for confirmation|for permission|for approval){40}( run| execut| install| delet| any | every | all )",
     "(do not|don't|never) (wait for|require) (user |)(confirmation|approval){40}( run| execut| install| delet| any | every | all )",
 ];
@@ -75,9 +76,9 @@ pub const REVIEWER_DIRECTED: &[&str] = &[
 
 /// Requests to read or send credentials, keys or tokens.
 pub const SECRET_REQUEST: &[&str] = &[
-    "(send |upload |transmit |email |exfiltrate |leak |forward |share |submit )(the |all |any |every |your |their |my |the user's |user's |users' |all the |all of the |all of the user's |)(saved |stored |local |aws |ssh |private |secret |)(credentials|passwords|api keys|secret keys|access keys|private key|ssh key|secrets|id_rsa|auth tokens|access tokens|api tokens|.env file|.env contents|environment variables|env vars)",
-    "post (the |your |their |all |any |my |)(credentials|passwords|api keys|secret keys|private key|ssh key|secrets)",
+    "(send |upload |post |transmit |email |exfiltrate |leak |forward |share |submit )(the |all |any |every |your |their |my |the user's |user's |users' |all the |all of the |all of the user's |)(saved |stored |local |aws |ssh |private |secret |)(credentials|passwords|api keys|secret keys|access keys|private key|ssh key|secrets|tokens|id_rsa|auth tokens|access tokens|api tokens|.env file|.env contents|environment variables|env vars|~/.aws/credentials|.aws/credentials|~/.ssh/id_|.ssh/id_|.npmrc|.netrc|.git-credentials)",
     "(read |cat |open |print |show |display |reveal |dump |output |access |copy |echo |collect |grab |steal ){20}(~/.ssh/id_|id_rsa|id_ed25519|.aws/credentials|.npmrc|.netrc|.git-credentials|browser cookies|browser passwords|macos keychain|login keychain|system keychain|keychain passwords|keychain contents|keychain entries|keychain items|keychain secrets|private keys|ssh keys)",
+    "(dump |read |steal |extract |export |grab |copy |exfiltrate )(the |your |their |the user's |user's |users' |all |all of the |)(macos |login |system |)keychain$w",
     "(read |print |dump |collect |harvest |extract |reveal |display |output |list |gather |grab |copy ){12}(all |any |every |the user's |users' |their |your |any saved |all saved |all stored )(stored |saved |)(credentials|passwords|api keys|tokens|secrets|private keys|ssh keys|access keys)",
 ];
 

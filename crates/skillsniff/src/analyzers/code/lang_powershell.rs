@@ -386,6 +386,8 @@ struct Walk<'t> {
     /// A `.Read(...)` call inside a loop.
     loop_read: bool,
     err_sinks: Vec<ErrSink<'t>>,
+    /// Text of variables assigned a plain string, by variable key.
+    consts: HashMap<String, String>,
     next_name: usize,
     cursor: Option<TreeCursor<'t>>,
 }
@@ -403,6 +405,7 @@ impl<'t> Walk<'t> {
             spans: Vec::new(),
             loop_read: false,
             err_sinks: Vec::new(),
+            consts: HashMap::new(),
             next_name: 0,
             cursor: None,
         }
@@ -928,6 +931,22 @@ impl<'t> Walk<'t> {
         };
         let targets = self.targets(left);
         let value = node.child_by_field_name("value");
+        if let ([target], Some(v)) = (targets.as_slice(), value) {
+            let v = self.unwrap(v);
+            let plain = match v.kind() {
+                "verbatim_string_characters" | "verbatim_here_string_characters" => true,
+                "expandable_string_literal" | "expandable_here_string_literal" => {
+                    self.core.children_upto(v, usize::MAX).is_empty()
+                }
+                _ => false,
+            };
+            if plain {
+                let text = self.fold(v);
+                if !text.contains(['$', UNKNOWN_PIECE]) {
+                    self.consts.insert(target.clone(), text);
+                }
+            }
+        }
         // `$f = 'Invoke-Expression'`: `& $f` may run it. Every value is kept.
         if let ([target], Some(v)) = (targets.as_slice(), value) {
             let v = self.unwrap(v);
@@ -1263,6 +1282,8 @@ struct Verdict<'t> {
     writes: Vec<Node<'t>>,
     /// Installs persistence whatever the path.
     always_write: bool,
+    /// The program or the command text is not a literal.
+    dynamic: bool,
 }
 
 // ---- Second pass ----
@@ -1320,9 +1341,38 @@ impl<'t> Walk<'t> {
         if let Some(class) = fallback {
             out.push(Verdict {
                 class: Some(class),
+                dynamic: c.dynamic,
                 ..Verdict::default()
             });
         }
+        out
+    }
+
+    /// `$name` pieces replaced by the text of variables assigned once.
+    fn expand_vars(&self, text: &str) -> String {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(at) = rest.find('$') {
+            out.push_str(&rest[..at]);
+            let after = &rest[at + 1..];
+            let len = after
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .unwrap_or(after.len());
+            let key = variable_key(&after[..len]);
+            let once = self
+                .core
+                .binds
+                .iter()
+                .filter(|b| b.targets.contains(&key))
+                .count()
+                == 1;
+            match self.consts.get(&key).filter(|_| once && len > 0) {
+                Some(value) => out.push_str(value),
+                None => out.push_str(&rest[at..at + 1 + len]),
+            }
+            rest = &after[len..];
+        }
+        out.push_str(rest);
         out
     }
 
@@ -1336,16 +1386,26 @@ impl<'t> Walk<'t> {
             n if NETWORK_COMMANDS.contains(&n) => v.class = Some(NETWORK),
             "invoke-expression" => v.class = Some(EVAL),
             "start-process" => {
-                let text = self.element_texts(c).join(" ");
+                let text = self.expand_vars(&self.element_texts(c).join(" "));
                 v.class = Some(if runs_fetched_code(&text) {
                     DOWNLOAD_EXEC
                 } else {
                     EXEC
                 });
+                v.dynamic = pos
+                    .first()
+                    .is_none_or(|p| self.fold(*p).contains(['$', UNKNOWN_PIECE]));
             }
             n if SHELL_PROGRAMS.contains(&n) => {
-                let texts = self.element_texts(c);
+                let texts: Vec<String> = self
+                    .element_texts(c)
+                    .iter()
+                    .map(|t| self.expand_vars(t))
+                    .collect();
                 let args: Vec<&str> = texts.iter().map(String::as_str).collect();
+                v.dynamic = texts
+                    .iter()
+                    .any(|t| !t.starts_with('-') && t.contains(['$', UNKNOWN_PIECE]));
                 let runs = texts.iter().any(|t| is_shell_flag(t.trim_end_matches(':')));
                 if let Some(class) = invocation_class(n, &args) {
                     v.class = Some(class);
@@ -1528,6 +1588,7 @@ impl<'t> Walk<'t> {
             line: line(shown),
             args_refs,
             text: self.display(shown),
+            dynamic: false,
         }
     }
 
@@ -1599,6 +1660,7 @@ impl<'t> Walk<'t> {
                     // A command's own output is not its input.
                     let mut site = self.site(id.clone(), class, c.node, c.node, c.input);
                     site.args_refs.retain(|r| *r != call.id);
+                    site.dynamic = class == EXEC && v.dynamic;
                     site
                 }
                 None => {
@@ -1628,6 +1690,7 @@ impl<'t> Walk<'t> {
                 line,
                 args_refs: self.core.refs(&[range]),
                 text: self.display(node),
+                dynamic: false,
             };
             self.core.push_sink(&mut sinks, || site);
         }

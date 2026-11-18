@@ -40,7 +40,7 @@ expression: value
       "severity": "low",
       "source": "engine",
       "suppressed": false,
-      "title": "Runs a command"
+      "title": "Runs a fixed command"
     }
   ],
   "review": {

@@ -13,7 +13,7 @@ use skillsniff::progress::NoopProgress;
 use skillsniff::scan::{ScanOptions, scan};
 use yaml_rust2::{Yaml, YamlLoader};
 
-const KINDS: &[&str] = &["malicious", "caution", "clean"];
+const KINDS: &[&str] = &["malicious", "caution", "clean", "coverage"];
 
 struct Expect {
     verdict: String,

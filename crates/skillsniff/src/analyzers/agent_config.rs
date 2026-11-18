@@ -34,6 +34,7 @@ pub const AGENT_CONFIG_TARGETS: &[&str] = &[
     "launch_agent",
     "windows_run_key",
     "git_hooks",
+    "agent_instructions",
     "suppression_file",
 ];
 
@@ -137,6 +138,18 @@ const SPECS: &[Spec] = &[
             "currentversion/run",
             "currentversion/runonce",
             "programs/startup",
+        ],
+        commands: &[],
+    },
+    Spec {
+        target: "agent_instructions",
+        paths: &[
+            "claude.md",
+            "agents.md",
+            ".claude/commands",
+            ".claude/agents",
+            ".claude/skills",
+            ".codex/",
         ],
         commands: &[],
     },
@@ -743,8 +756,11 @@ fn scan_writes(text: &str, kind: Kind, deadline: Instant, hits: &mut Hits) -> Cu
             let writes = if p == "core.hookspath" {
                 git_sets(line, a + p.len(), git_flags, kind == Kind::Prose)
             } else {
+                // Prose that merely mentions CLAUDE.md or a command folder is
+                // ordinary documentation: only a write target counts there.
                 is_write_target(line, ix, a)
                     || (kind == Kind::Prose
+                        && spec.target != "agent_instructions"
                         && *prose_verb.get_or_insert_with(|| has_strong_prose_verb(line)))
             };
             if !writes {

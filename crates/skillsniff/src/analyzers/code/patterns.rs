@@ -506,18 +506,26 @@ fn is_browser_store(t: &str, lower: &str) -> bool {
 }
 
 /// Whether an environment variable name looks like it holds a secret.
-/// Suffixes of names that hold a location or a label, not the secret itself.
-const ENV_NON_SECRET_SUFFIXES: &[&str] = &["_file", "_path", "_dir", "_name"];
+/// Suffixes of names that hold a folder or a label, not the secret itself.
+const ENV_NON_SECRET_SUFFIXES: &[&str] = &["_dir", "_name"];
+
+/// Suffixes of names that point at a file: the file is the secret.
+const ENV_FILE_SUFFIXES: &[&str] = &["_file", "_path"];
 
 pub fn env_class(name: &str) -> Option<&'static str> {
     let lower = name.to_ascii_lowercase();
     if ENV_NON_SECRET_SUFFIXES.iter().any(|s| lower.ends_with(s)) {
         return None;
     }
-    SECRET_ENV_MARKERS
-        .iter()
-        .any(|m| lower.contains(m))
-        .then_some(SECRET_ENV)
+    if !SECRET_ENV_MARKERS.iter().any(|m| lower.contains(m)) {
+        return None;
+    }
+    // `AWS_SHARED_CREDENTIALS_FILE` names a credential file that the script
+    // then opens: it counts as one.
+    if ENV_FILE_SUFFIXES.iter().any(|s| lower.ends_with(s)) {
+        return Some(SECRET_FILE);
+    }
+    Some(SECRET_ENV)
 }
 
 /// Whether path text names a shell profile, agent config, cron or autostart

@@ -9,7 +9,7 @@
 //! stages, input redirections, here-strings and here-documents, or the
 //! callers of the function it runs in.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
 use tree_sitter::{Language, Node, Tree, TreeCursor};
@@ -106,6 +106,10 @@ struct Cmd<'t> {
     socket: bool,
     /// What an `exec`/`eval` runs as code.
     code: Code<'t>,
+    /// The program or the code text is not a literal.
+    dynamic: bool,
+    /// The variable that holds the program (`$X args`, `exec "${cmd[@]}"`).
+    prog_var: Option<String>,
     /// Arguments a network client reads to authenticate but does not send
     /// (`ssh -i key`, `curl --cert file`).
     exclude: Vec<Node<'t>>,
@@ -146,6 +150,13 @@ struct Walk<'t> {
     dynamic: Vec<Dynamic<'t>>,
     code_refs: BTreeMap<String, Vec<String>>,
     next_name: usize,
+    /// Plain-text values of variables assigned once, and every assignment count.
+    consts: HashMap<String, String>,
+    assigned: HashMap<String, usize>,
+    /// For each variable, whether each of its assignments is a plain literal.
+    assigned_all: HashMap<String, Vec<bool>>,
+    /// First word of arrays assigned a literal first element: `cmd=(npx ...)`.
+    array_first: HashMap<String, String>,
     cursor: Option<TreeCursor<'t>>,
 }
 
@@ -162,6 +173,10 @@ impl<'t> Walk<'t> {
             dynamic: Vec::new(),
             code_refs: BTreeMap::new(),
             next_name: 0,
+            consts: HashMap::new(),
+            assigned: HashMap::new(),
+            assigned_all: HashMap::new(),
+            array_first: HashMap::new(),
             cursor: None,
         }
     }
@@ -498,6 +513,27 @@ impl<'t> Walk<'t> {
         self.core.not_values.insert(name.start_byte());
         let target = self.text(name).to_string();
         let value = node.child_by_field_name("value");
+        *self.assigned.entry(target.clone()).or_default() += 1;
+        let mut literal = false;
+        if let Some(v) = value {
+            let text = self.fold(v);
+            literal = !text.contains(['$', UNKNOWN_PIECE, IFS_SEP]);
+            if literal {
+                self.consts.insert(target.clone(), text);
+            }
+            if v.kind() == "array"
+                && let Some(first) = v.named_child(0)
+            {
+                let first = self.fold(first);
+                if !first.contains(['$', UNKNOWN_PIECE, IFS_SEP]) {
+                    self.array_first.insert(target.clone(), first);
+                }
+            }
+        }
+        self.assigned_all
+            .entry(target.clone())
+            .or_default()
+            .push(literal);
         if let Some(v) = value {
             // `c=curl`: `$c …` may run curl. Every value is kept.
             let text = self.fold(v);
@@ -984,12 +1020,16 @@ impl<'t> Walk<'t> {
             shell_reader: false,
             socket: false,
             code: Code::None,
+            dynamic: false,
+            prog_var: None,
             exclude: Vec::new(),
             own_inputs,
         };
         if dynamic && let Some((n, _)) = words.get(idx) {
             // A computed program runs its own name: `$(curl …)`, `$X`.
             cmd.class = Some(EXEC);
+            cmd.dynamic = true;
+            cmd.prog_var = self.program_var(*n);
             cmd.code = Code::Nodes(vec![*n]);
         }
         let has_input = scope.input.is_some() || stdin_args || own_input;
@@ -1436,6 +1476,7 @@ impl<'t> Walk<'t> {
             line: line(shown),
             args_refs,
             text: self.display(shown),
+            dynamic: false,
         }
     }
 
@@ -1477,6 +1518,7 @@ impl<'t> Walk<'t> {
             line: line(c.node),
             args_refs,
             text: self.display(c.node),
+            dynamic: class == EXEC && c.dynamic,
         }
     }
 
@@ -1607,6 +1649,86 @@ impl<'t> Walk<'t> {
         out
     }
 
+    /// Name of the variable a program word expands: `$X`, `"${X}"`,
+    /// `"${X[@]}"`.
+    fn program_var(&self, node: Node<'t>) -> Option<String> {
+        if let Some(v) = self.expanded_variable(node) {
+            return Some(v);
+        }
+        let text = self.text(node).trim_matches('"');
+        let inner = text.strip_prefix("${")?.strip_suffix('}')?;
+        let name = inner
+            .strip_suffix("[@]")
+            .or_else(|| inner.strip_suffix("[*]"))?;
+        Some(name.to_string())
+    }
+
+    /// `$name` and `${name}` replaced by the text of variables assigned once.
+    fn expand(&self, text: &str) -> String {
+        let mut out = text.to_string();
+        for _ in 0..4 {
+            let mut next = out.clone();
+            for (name, value) in &self.consts {
+                if self.assigned.get(name) == Some(&1) {
+                    next = next
+                        .replace(&format!("${{{name}}}"), value)
+                        .replace(&format!("${name}"), value);
+                }
+            }
+            if next == out {
+                break;
+            }
+            out = next;
+        }
+        out
+    }
+
+    /// Settles, for every command that runs code, whether the code text
+    /// (with single-assignment variables folded in) fetches and pipes into
+    /// a shell, and whether it is a literal at all.
+    fn resolve_code(&mut self) {
+        let mut results = Vec::new();
+        for c in self.cmds.iter().chain(&self.extra) {
+            let shellish = c
+                .word
+                .as_deref()
+                .is_some_and(|w| is_posix_shell(w) || w == "eval");
+            if let Some(var) = &c.prog_var {
+                // A program held in a variable is fixed when every value it
+                // is given is a literal (or an array starting with one).
+                let fixed = self.array_first.contains_key(var)
+                    || self
+                        .assigned_all
+                        .get(var)
+                        .is_some_and(|v| !v.is_empty() && v.iter().all(|l| *l));
+                results.push((false, !fixed));
+                continue;
+            }
+            results.push(match &c.code {
+                Code::Nodes(nodes) => {
+                    let text: Vec<String> = nodes.iter().map(|n| self.fold(*n)).collect();
+                    let text = self.expand(&text.join(" "));
+                    (
+                        shellish && pipes_download_to_shell(&spaced(&text)),
+                        c.dynamic || text.contains(['$', UNKNOWN_PIECE]),
+                    )
+                }
+                Code::Input | Code::All => (false, true),
+                Code::None => (false, c.dynamic),
+            });
+        }
+        let n = self.cmds.len();
+        for (i, (fetch, dynamic)) in results.into_iter().enumerate() {
+            let c = if i < n {
+                &mut self.cmds[i]
+            } else {
+                &mut self.extra[i - n]
+            };
+            c.fetch_pipe |= fetch;
+            c.dynamic = dynamic;
+        }
+    }
+
     /// Classifies `$c args` as every program `c` was assigned. The command
     /// stays an `exec` of a computed program, and each meaning the rules
     /// classify adds its own sink. A wrapper meaning (`sudo`, `env`,
@@ -1676,6 +1798,7 @@ impl<'t> Walk<'t> {
     fn finish(mut self) -> Facts {
         self.resolve_dynamic();
         self.cmds.sort_by_key(|c| c.node.start_byte());
+        self.resolve_code();
         for i in 0..self.cmds.len() {
             let c = &self.cmds[i];
             let Some(word) = c.word.as_deref().filter(|w| self.funcs.contains(*w)) else {

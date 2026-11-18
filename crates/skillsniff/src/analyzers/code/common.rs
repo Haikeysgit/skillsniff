@@ -452,6 +452,7 @@ impl<'t> Core<'t> {
             line: line(node),
             args_refs: Vec::new(),
             text,
+            dynamic: false,
         });
     }
 
@@ -588,6 +589,7 @@ impl<'t> Core<'t> {
             line: line(c.node),
             args_refs,
             text: text.unwrap_or_else(|| format!("{}(...)", clip(name, TEXT_CHARS))),
+            dynamic: false,
         }
     }
 

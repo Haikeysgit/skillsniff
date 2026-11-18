@@ -425,6 +425,7 @@ fn site(id: &str, class: &str, line: u32, refs: &[&str]) -> Site {
         line,
         args_refs: refs.iter().map(|s| s.to_string()).collect(),
         text: String::new(),
+        dynamic: false,
     }
 }
 

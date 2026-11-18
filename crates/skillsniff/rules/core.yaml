@@ -239,11 +239,18 @@ rules:
     advice: Check which hosts it talks to and what it sends.
   - id: exec.run-command
     severity: low
-    title: Runs a command
+    title: Runs a fixed command
     signal: Sink
     where: {class: "exec"}
     explain: The code starts another program or shell command.
     advice: Check the command and where its arguments come from.
+  - id: exec.dynamic-command
+    severity: medium
+    title: Runs a command that is not fixed in the code
+    signal: Sink
+    where: {class: "exec", dynamic: "true"}
+    explain: The program, or the text a shell is told to run, is built at run time (a variable, a parameter or an expansion) instead of written out. What runs cannot be read from the code, and a fetched string can end up there.
+    advice: Find where the command text comes from and what it can contain.
   - id: exec.eval
     severity: high
     title: Evaluates dynamic code
@@ -395,11 +402,18 @@ rules:
     where: {target: "git_hooks", context: "code"}
     explain: The code adds a git hook or sets a hooks path, so commands run on later git actions.
     advice: Remove the hook.
+  - id: config.agent-instructions-write
+    severity: medium
+    title: Writes agent instruction files
+    signal: AgentConfig
+    where: {target: "agent_instructions", context: "code"}
+    explain: The code writes CLAUDE.md, AGENTS.md or a command, agent or skill file. Text placed there is read at the start of every later session, so it steers the agent for good.
+    advice: Check what text is written and why. Remove the write if it is not needed.
   - id: config.instructs-config-change
     severity: medium
     title: Instructions to change agent or system configuration
     signal: AgentConfig
-    where: {target: "agent_settings|hooks|permissions|mcp_config|shell_profile|cron|launch_agent|windows_run_key|git_hooks", context: "prose"}
+    where: {target: "agent_settings|hooks|permissions|mcp_config|shell_profile|cron|launch_agent|windows_run_key|git_hooks|agent_instructions", context: "prose"}
     explain: The instructions tell the agent to change its own settings or a persistence point. This is not code, but an agent may follow it.
     advice: Check that the change is needed and expected.
   - id: config.suppression-file

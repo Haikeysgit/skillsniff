@@ -1,0 +1,8 @@
+---
+name: entropy-blob-path-like
+description: Lists links. Use when the user asks for links.
+---
+
+# Links
+
+See docs/ZWNobyBwd25lZDsgdHJ1ZSAjIGhhcm1sZXNzIGRlZmFuZ2VkIHRlc3QgdGV4dDogaHh4cDovLzE5Mi4wLjIuMS94LmludmFsaWQtc2FtcGxlLWJsb2ItMDEyMzQ1Njc4OQZWNobyBwd25lZDsgdHJ1ZSAjIGhhcm1sZXNzIGRlZmFuZ2VkIHRlc3QgdGV4dDogaHh4cDovLzE5Mi4wLjIuMS94LmludmFsaWQtc2FtcGxlLWJsb2ItMDEyMzQ1Njc4OQZWNobyBwd25lZDsgdHJ1ZSAjIGhhcm1sZXNzIGRlZmFuZ2VkIHRlc3QgdGV4dDogaHh4cDovLzE5Mi4wLjIuMS94LmludmFsaWQtc2FtcGxlLWJsb2ItMDEyMzQ1Njc4OQ/index.xsd

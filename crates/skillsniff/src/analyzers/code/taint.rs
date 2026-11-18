@@ -22,6 +22,8 @@ pub struct Site {
     pub args_refs: Vec<String>,
     /// Short display text for evidence, for example `requests.post(...)`.
     pub text: String,
+    /// An `exec` sink whose program or code string is not a literal.
+    pub dynamic: bool,
 }
 
 /// What a language extracted from one file.

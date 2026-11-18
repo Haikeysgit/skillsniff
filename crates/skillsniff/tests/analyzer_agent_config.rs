@@ -259,6 +259,7 @@ fn declared_targets_cover_every_emitted_value() {
             "launch_agent",
             "windows_run_key",
             "git_hooks",
+            "agent_instructions",
             "suppression_file",
         ]
     );

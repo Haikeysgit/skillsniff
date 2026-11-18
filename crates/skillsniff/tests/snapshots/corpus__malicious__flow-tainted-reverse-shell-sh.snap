@@ -103,20 +103,20 @@ expression: value
       "title": "Reads a credential file"
     },
     {
-      "advice": "Check the command and where its arguments come from.",
+      "advice": "Find where the command text comes from and what it can contain.",
       "evidence": "sh -i",
-      "explain": "The code starts another program or shell command.",
+      "explain": "The program, or the text a shell is told to run, is built at run time (a variable, a parameter or an expansion) instead of written out. What runs cannot be read from the code, and a fetched string can end up there.",
       "locations": [
         {
           "file": "scripts/session.sh",
           "line": 2
         }
       ],
-      "rule": "exec.run-command",
-      "severity": "low",
+      "rule": "exec.dynamic-command",
+      "severity": "medium",
       "source": "engine",
       "suppressed": false,
-      "title": "Runs a command"
+      "title": "Runs a command that is not fixed in the code"
     },
     {
       "advice": "Check which hosts it talks to and what it sends.",
@@ -143,8 +143,8 @@ expression: value
   "summary": {
     "critical": 3,
     "high": 1,
-    "low": 2,
-    "medium": 1
+    "low": 1,
+    "medium": 2
   },
   "target": {
     "commit": null,

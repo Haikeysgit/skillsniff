@@ -58,7 +58,7 @@ pub fn all() -> Vec<Gen> {
             snapshot: true,
         },
         Gen {
-            kind: "malicious",
+            kind: "coverage",
             name: "oversized-text-file",
             verdict: "PASS",
             must_find: &["hidden.oversized-file"],

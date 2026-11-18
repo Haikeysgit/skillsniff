@@ -1,4 +1,0 @@
-verdict: PASS
-must_find:
-  - exec.download-and-run
-known_gap: true

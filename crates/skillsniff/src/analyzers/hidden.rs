@@ -278,34 +278,48 @@ fn scan_mixed_script(line: &str, file: &str, n: u32, out: &mut Vec<Signal>) {
     }
 }
 
-/// Whether byte `at` of the line lies inside a URL: a `://` earlier on the line
-/// with no space, quote or bracket between it and `at`.
-fn in_url(line: &str, at: usize) -> bool {
+/// Longest token that can be a path, as opposed to a payload.
+const MAX_PATH_TOKEN: usize = 120;
+/// Longest segment of a path-like token.
+const MAX_PATH_SEGMENT: usize = 40;
+
+/// Whether the token starting at byte `at` of the line sits in the path of a
+/// URL: a `://` earlier on the line, a `/` after the host, no space, quote,
+/// bracket, `?` or `#` in between, and a token short enough to be a path.
+fn in_url(line: &str, at: usize, tok: &str) -> bool {
     let Some(open) = line[..at].rfind("://") else {
         return false;
     };
-    !line[open..at].contains(|c: char| c.is_whitespace() || "\"'`<>()[]{}".contains(c))
+    let before = &line[open + 3..at];
+    tok.len() <= MAX_PATH_TOKEN
+        && (before.contains('/') || tok.contains('/'))
+        && !before.contains(|c: char| c.is_whitespace() || "\"'`<>()[]{}?#".contains(c))
 }
 
-/// A relative file path such as `schemas/shared-types` right before `.xsd`.
+/// A relative file path such as `schemas/shared-types` right before `.xsd`:
+/// short, with short segments and none of the `+` or `=` of base64.
 fn is_file_path(tok: &str, after: &str) -> bool {
-    tok.contains('/')
+    tok.len() <= MAX_PATH_TOKEN
+        && tok.contains('/')
+        && !tok.contains(['+', '='])
+        && tok.split('/').all(|seg| seg.len() <= MAX_PATH_SEGMENT)
         && after
             .strip_prefix('.')
             .is_some_and(|r| r.starts_with(|c: char| c.is_ascii_alphabetic()))
 }
 
-/// A subresource-integrity value such as `sha384-...`.
+/// A subresource-integrity value: `sha256-`, `sha384-` or `sha512-` and a
+/// base64 digest of exactly the right length.
 fn is_integrity_hash(tok: &str) -> bool {
-    ["sha256-", "sha384-", "sha512-"]
+    [("sha256-", 44), ("sha384-", 64), ("sha512-", 88)]
         .iter()
-        .any(|p| tok.starts_with(p))
+        .any(|(p, n)| tok.strip_prefix(p).is_some_and(|d| d.len() == *n))
 }
 
 fn scan_entropy(line: &str, file: &str, n: u32, out: &mut Vec<Signal>) {
     let emit = |s: usize, tok: &str, out: &mut Vec<Signal>| {
         if tok.len() < MIN_TOKEN_LEN
-            || in_url(line, s)
+            || in_url(line, s, tok)
             || is_integrity_hash(tok)
             || is_file_path(tok, &line[s + tok.len()..])
         {

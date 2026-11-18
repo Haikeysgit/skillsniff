@@ -16,8 +16,8 @@ functional, and none of them is ever run, imported or installed.
 
 ## Layout
 
-- `malicious/`: patterns that must be reported; most are CAUTION or BLOCK. A few
-  cover low-severity rules and so end in PASS.
+- `malicious/`: patterns that must be reported as CAUTION or BLOCK.
+- `coverage/`: low-severity rules that end in PASS but must still be reported.
 - `caution/`: patterns that must be reported as CAUTION.
 - `clean/`: look-alikes that must not be flagged (false-positive guards).
 - Each folder holds one skill and an `expected.yaml` with `verdict` and

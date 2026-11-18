@@ -85,6 +85,12 @@ jobs:
           ls reports
           [ "$(ls reports | wc -l)" -ge 2 ] || { echo "need reports from at least two systems"; exit 1; }
           status=0
+          for dir in reports/*/; do
+            for name in exfil-aws minimal-skill broad-trigger; do
+              [ -s "$dir$name.json" ] || { echo "missing or empty: $dir$name.json"; status=1; }
+            done
+          done
+          [ $status -eq 0 ] || exit 1
           for name in exfil-aws minimal-skill broad-trigger; do
             if [ "$(sha256sum reports/*/"$name".json | cut -d' ' -f1 | sort -u | wc -l)" -ne 1 ]; then
               echo "reports for $name differ:"
