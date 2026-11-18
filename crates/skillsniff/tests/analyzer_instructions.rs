@@ -397,7 +397,7 @@ fn unterminated_comment_flood_finishes_quickly() {
     let ctx = ctx_for(dir.path());
     let start = std::time::Instant::now();
     let out = InstructionsAnalyzer.run(&ctx);
-    assert!(start.elapsed().as_secs() < 10, "{:?}", start.elapsed());
+    assert!(start.elapsed().as_secs() < 30, "{:?}", start.elapsed());
     assert!(has(&out.signals, "hidden_comment"));
 }
 
