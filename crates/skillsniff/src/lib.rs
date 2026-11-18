@@ -2,6 +2,7 @@
 
 pub mod acquire;
 pub mod analyzers;
+pub mod export;
 pub mod frontmatter;
 pub mod inventory;
 pub mod model;

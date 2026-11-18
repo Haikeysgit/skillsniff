@@ -28,7 +28,7 @@ use crate::target::{Target, TargetError, detect_skill};
 const GITHUB_API: &str = "https://api.github.com";
 const GITHUB_CODELOAD: &str = "https://codeload.github.com";
 /// Analyzers whose absence stops a scan from passing.
-const REQUIRED_ANALYZERS: &[&str] = &["instructions", "code", "hidden", "agent_config"];
+pub(crate) const REQUIRED_ANALYZERS: &[&str] = &["instructions", "code", "hidden", "agent_config"];
 const SCHEMA_VERSION: &str = "1";
 
 /// Settings for one scan.
