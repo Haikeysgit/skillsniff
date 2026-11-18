@@ -375,7 +375,8 @@ fn extract_zip(bytes: &[u8], limits: &Limits, root: &Path) -> Result<Vec<Signal>
     for i in 0..archive.len() {
         let (raw, mode, size) = {
             let f = archive.by_index_raw(i).map_err(zip_err)?;
-            (f.name().to_string(), f.unix_mode(), f.size())
+            let name = f.name().map_err(zip_err)?.into_owned();
+            (name, f.unix_mode(), f.size())
         };
         // As in Info-ZIP and Python's zipfile, only a trailing `/` makes a
         // directory; mode bits never do. Every other non-symlink entry is a
