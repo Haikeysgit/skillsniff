@@ -255,3 +255,29 @@ fn lone_cr_line_numbers() {
         .collect();
     assert_eq!(lines, vec![3, 4]);
 }
+
+#[test]
+fn high_entropy_carries_alphabet_and_length() {
+    let hex = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08";
+    let sigs = run(&[("a.md", format!("h {hex}\n").into_bytes())]);
+    let h = with(&sigs, "high_entropy");
+    assert_eq!(h[0].fields["alphabet"], "hex");
+    assert_eq!(h[0].fields["len"], "64");
+    let tok = "aB3dE5gH7jK9mN1pQ3sT5vW7yZ9bC2eF4hJ6kL8nP0rS";
+    let sigs = run(&[("a.md", format!("key {tok}\n").into_bytes())]);
+    let h = with(&sigs, "high_entropy");
+    assert_eq!(h[0].fields["alphabet"], "base64");
+    assert_eq!(h[0].fields["len"], tok.len().to_string());
+}
+
+#[test]
+fn binary_file_carries_lowercase_extension() {
+    let sigs = run(&[
+        ("Logo.PNG", vec![0x89u8, 0x50, 0x00, 0x47]),
+        ("blob", vec![0u8, 1, 2]),
+    ]);
+    let b = with(&sigs, "binary_file");
+    let ext = |f: &str| b.iter().find(|s| s.locations[0].file == f).unwrap().fields["ext"].clone();
+    assert_eq!(ext("Logo.PNG"), "png");
+    assert_eq!(ext("blob"), "");
+}

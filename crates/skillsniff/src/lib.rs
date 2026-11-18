@@ -6,6 +6,7 @@ pub mod frontmatter;
 pub mod inventory;
 pub mod model;
 pub mod progress;
+pub mod rules;
 pub mod score;
 pub mod source;
 pub mod target;

@@ -194,6 +194,13 @@ fn safe_token(s: &str) -> String {
     out
 }
 
+fn with_fields(mut s: Signal, extra: &[(&str, &str)]) -> Signal {
+    for (k, v) in extra {
+        s.fields.insert((*k).to_string(), (*v).to_string());
+    }
+    s
+}
+
 fn signal(pattern: &str, file: &str, line: u32, evidence: String) -> Signal {
     Signal {
         kind: HIDDEN.to_string(),
@@ -279,11 +286,17 @@ fn scan_entropy(line: &str, file: &str, n: u32, out: &mut Vec<Signal>) {
         let hex = tok.bytes().all(|b| b.is_ascii_hexdigit());
         let limit = if hex { HEX_ENTROPY } else { BASE64_ENTROPY };
         if shannon(tok) > limit {
-            out.push(signal(
-                "high_entropy",
-                file,
-                n,
-                truncate_chars(tok, EVIDENCE_TOKEN_CHARS),
+            out.push(with_fields(
+                signal(
+                    "high_entropy",
+                    file,
+                    n,
+                    truncate_chars(tok, EVIDENCE_TOKEN_CHARS),
+                ),
+                &[
+                    ("alphabet", if hex { "hex" } else { "base64" }),
+                    ("len", &tok.len().to_string()),
+                ],
             ));
         }
     };
@@ -359,11 +372,21 @@ fn has_script_extension(path: &str) -> bool {
 
 fn file_flags(f: &FileEntry, out: &mut Vec<Signal>) {
     if f.content_type == ContentType::Binary {
-        out.push(signal(
-            "binary_file",
-            &f.path,
-            0,
-            "file content is binary".to_string(),
+        let ext = f
+            .path
+            .rsplit('/')
+            .next()
+            .and_then(|name| name.rsplit_once('.'))
+            .map(|(_, e)| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        out.push(with_fields(
+            signal(
+                "binary_file",
+                &f.path,
+                0,
+                "file content is binary".to_string(),
+            ),
+            &[("ext", &ext)],
         ));
         if has_script_extension(&f.path) {
             out.push(signal(
