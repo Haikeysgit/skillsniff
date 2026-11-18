@@ -7,6 +7,7 @@ pub mod frontmatter;
 pub mod inventory;
 pub mod model;
 pub mod progress;
+pub mod review;
 pub mod rules;
 pub mod scan;
 pub mod score;
