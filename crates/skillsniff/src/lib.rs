@@ -7,8 +7,10 @@ pub mod inventory;
 pub mod model;
 pub mod progress;
 pub mod rules;
+pub mod scan;
 pub mod score;
 pub mod source;
+pub mod suppress;
 pub mod target;
 
 /// Crate version, as published.
