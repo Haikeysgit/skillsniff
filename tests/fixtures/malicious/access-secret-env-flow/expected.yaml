@@ -1,0 +1,5 @@
+verdict: CAUTION
+must_find:
+  - access.secret-env
+  - exfil.env-to-network
+  - network.outbound

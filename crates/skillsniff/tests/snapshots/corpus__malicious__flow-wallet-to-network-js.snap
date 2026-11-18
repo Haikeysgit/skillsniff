@@ -1,0 +1,89 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Do not use the skill.",
+      "evidence": "fs.readFileSync(/.ethereum/keystore/UTC--test) -> fetch(...)",
+      "explain": "Data read from a credential file, browser profile, wallet or keychain reaches a network request. This is the shape of credential theft.",
+      "locations": [
+        {
+          "file": "scripts/balance.js",
+          "line": 2
+        },
+        {
+          "file": "scripts/balance.js",
+          "line": 3
+        }
+      ],
+      "rule": "exfil.secret-to-network",
+      "severity": "critical",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Sends sensitive data over the network"
+    },
+    {
+      "advice": "Confirm the skill needs this data.",
+      "evidence": "fs.readFileSync(/.ethereum/keystore/UTC--test)",
+      "explain": "The code reads files that belong to a cryptocurrency wallet.",
+      "locations": [
+        {
+          "file": "scripts/balance.js",
+          "line": 2
+        }
+      ],
+      "rule": "access.wallet",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Reads cryptocurrency wallet data"
+    },
+    {
+      "advice": "Check which hosts it talks to and what it sends.",
+      "evidence": "fetch(...)",
+      "explain": "The code sends or fetches data over the network.",
+      "locations": [
+        {
+          "file": "scripts/balance.js",
+          "line": 3
+        }
+      ],
+      "rule": "network.outbound",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Makes a network request"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 1,
+    "high": 0,
+    "low": 1,
+    "medium": 1
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "5e775828a98f47bac2123858c564e616e318018534ebc0a6af937e11d618e5d9",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "BLOCK"
+}

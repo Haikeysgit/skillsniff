@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Remove the passage. Approval prompts should stay under the user control.",
+      "evidence": "dangerously-skip-permissions",
+      "explain": "The text asks the agent to act without confirmation, skip approval steps or disable safety checks.",
+      "locations": [
+        {
+          "file": "SKILL.md",
+          "line": 8
+        }
+      ],
+      "rule": "instructions.permission-bypass",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Asks the agent to skip permission prompts"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 1,
+    "low": 0,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "ae4fbfde9a28291b5f071f1289f91d944e17fa737c0101a91abe8bbbeeb0fc34",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

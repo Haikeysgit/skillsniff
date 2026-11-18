@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Check why the file is large.",
+      "evidence": "1170000 bytes",
+      "explain": "The file is larger than 1 MB, which is unusual for a skill and makes review harder.",
+      "locations": [
+        {
+          "file": "notes/big.txt",
+          "line": 0
+        }
+      ],
+      "rule": "hidden.oversized-file",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Unusually large file"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 1,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "133fe53e840d47a72d51326ff36170059aa054303106efce924a86c562a6566f",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "PASS"
+}

@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Read the comment, and remove it unless it is needed.",
+      "evidence": "HTML comment of 282 characters",
+      "explain": "A long comment is invisible when the file is rendered but is still read by an agent that loads the raw text.",
+      "locations": [
+        {
+          "file": "SKILL.md",
+          "line": 10
+        }
+      ],
+      "rule": "instructions.hidden-comment",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Long hidden comment"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 0,
+    "medium": 1
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "4bf3f20ec8180fcb939e78d6aa1a0cf0e26b7cf56e670bc6ea9ac1b41277615f",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

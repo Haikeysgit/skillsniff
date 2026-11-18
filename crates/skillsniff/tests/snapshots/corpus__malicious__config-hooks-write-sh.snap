@@ -1,0 +1,69 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Do not use the skill.",
+      "evidence": "echo 'true' > \"$HOME/.claude/hooks/pre-tool.sh\"",
+      "explain": "The code adds hooks to the settings of an agent. Hooks run commands automatically on agent events, which is a way to keep running after the skill is removed.",
+      "locations": [
+        {
+          "file": "scripts/add.sh",
+          "line": 3
+        }
+      ],
+      "rule": "config.writes-hooks",
+      "severity": "critical",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Writes agent hooks"
+    },
+    {
+      "advice": "Confirm the write is expected and needed.",
+      "evidence": "echo 'true' > \"$HOME/.claude/hooks/pre-tool.sh\"",
+      "explain": "The code writes to a place that changes how the machine or agent behaves later, such as a startup file or configuration folder.",
+      "locations": [
+        {
+          "file": "scripts/add.sh",
+          "line": 3
+        }
+      ],
+      "rule": "config.sensitive-write",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Writes to a sensitive location"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 1,
+    "high": 1,
+    "low": 0,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "b02e6d9be1c66dd623c6ec9d86983d0a961cf1f1dd5f9ab07df7f5d7144be63e",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "BLOCK"
+}

@@ -1,0 +1,46 @@
+# Widely used public agent skills, pinned to the commit that was HEAD when the list was made.
+# Used by scripts/fp-rate.sh to measure the false-positive rate.
+entries:
+  - { repo: anthropics/skills, path: skills/algorithmic-art, commit: e4bb5d960d87126ff3b3a8af1a104b7db67560ba }
+  - { repo: anthropics/skills, path: skills/brand-guidelines, commit: e4bb5d960d87126ff3b3a8af1a104b7db67560ba }
+  - { repo: anthropics/skills, path: skills/canvas-design, commit: e4bb5d960d87126ff3b3a8af1a104b7db67560ba }
+  - { repo: anthropics/skills, path: skills/claude-api, commit: e4bb5d960d87126ff3b3a8af1a104b7db67560ba }
+  - { repo: anthropics/skills, path: skills/doc-coauthoring, commit: e4bb5d960d87126ff3b3a8af1a104b7db67560ba }
+  - { repo: anthropics/skills, path: skills/docx, commit: e4bb5d960d87126ff3b3a8af1a104b7db67560ba }
+  - { repo: anthropics/skills, path: skills/frontend-design, commit: e4bb5d960d87126ff3b3a8af1a104b7db67560ba }
+  - { repo: anthropics/skills, path: skills/internal-comms, commit: e4bb5d960d87126ff3b3a8af1a104b7db67560ba }
+  - { repo: anthropics/skills, path: skills/mcp-builder, commit: e4bb5d960d87126ff3b3a8af1a104b7db67560ba }
+  - { repo: anthropics/skills, path: skills/pdf, commit: e4bb5d960d87126ff3b3a8af1a104b7db67560ba }
+  - { repo: anthropics/skills, path: skills/pptx, commit: e4bb5d960d87126ff3b3a8af1a104b7db67560ba }
+  - { repo: anthropics/skills, path: skills/skill-creator, commit: e4bb5d960d87126ff3b3a8af1a104b7db67560ba }
+  - { repo: anthropics/skills, path: skills/slack-gif-creator, commit: e4bb5d960d87126ff3b3a8af1a104b7db67560ba }
+  - { repo: anthropics/skills, path: skills/theme-factory, commit: e4bb5d960d87126ff3b3a8af1a104b7db67560ba }
+  - { repo: anthropics/skills, path: skills/web-artifacts-builder, commit: e4bb5d960d87126ff3b3a8af1a104b7db67560ba }
+  - { repo: anthropics/skills, path: skills/webapp-testing, commit: e4bb5d960d87126ff3b3a8af1a104b7db67560ba }
+  - { repo: anthropics/skills, path: skills/xlsx, commit: e4bb5d960d87126ff3b3a8af1a104b7db67560ba }
+  - { repo: obra/superpowers, path: skills/brainstorming, commit: 22f0b463e7a5e579904dd6211a520321035526f7 }
+  - { repo: obra/superpowers, path: skills/systematic-debugging, commit: 22f0b463e7a5e579904dd6211a520321035526f7 }
+  - { repo: obra/superpowers, path: skills/test-driven-development, commit: 22f0b463e7a5e579904dd6211a520321035526f7 }
+  - { repo: obra/superpowers, path: skills/using-git-worktrees, commit: 22f0b463e7a5e579904dd6211a520321035526f7 }
+  - { repo: obra/superpowers, path: skills/writing-skills, commit: 22f0b463e7a5e579904dd6211a520321035526f7 }
+  - { repo: obra/superpowers, path: skills/requesting-code-review, commit: 22f0b463e7a5e579904dd6211a520321035526f7 }
+  - { repo: vercel-labs/agent-skills, path: skills/deploy-to-vercel, commit: 1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62 }
+  - { repo: vercel-labs/agent-skills, path: skills/react-best-practices, commit: 1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62 }
+  - { repo: vercel-labs/agent-skills, path: skills/web-design-guidelines, commit: 1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62 }
+  - { repo: vercel-labs/agent-skills, path: skills/vercel-cli-with-tokens, commit: 1a2c79d4e6c4a2283dc2c614b6538cbe1ed5ca62 }
+  - { repo: openai/skills, path: skills/.curated/gh-fix-ci, commit: 49f948faa9258a0c61caceaf225e179651397431 }
+  - { repo: openai/skills, path: skills/.curated/gh-address-comments, commit: 49f948faa9258a0c61caceaf225e179651397431 }
+  - { repo: openai/skills, path: skills/.curated/pdf, commit: 49f948faa9258a0c61caceaf225e179651397431 }
+  - { repo: openai/skills, path: skills/.curated/playwright, commit: 49f948faa9258a0c61caceaf225e179651397431 }
+  - { repo: openai/skills, path: skills/.curated/screenshot, commit: 49f948faa9258a0c61caceaf225e179651397431 }
+  - { repo: openai/skills, path: skills/.curated/openai-docs, commit: 49f948faa9258a0c61caceaf225e179651397431 }
+  - { repo: openai/skills, path: skills/.curated/netlify-deploy, commit: 49f948faa9258a0c61caceaf225e179651397431 }
+  - { repo: openai/skills, path: skills/.curated/jupyter-notebook, commit: 49f948faa9258a0c61caceaf225e179651397431 }
+  - { repo: mattpocock/skills, path: skills/engineering/code-review, commit: 5863806dd4e15c63174bee4e7515a4256792ecfa }
+  - { repo: mattpocock/skills, path: skills/engineering/diagnosing-bugs, commit: 5863806dd4e15c63174bee4e7515a4256792ecfa }
+  - { repo: mattpocock/skills, path: skills/engineering/research, commit: 5863806dd4e15c63174bee4e7515a4256792ecfa }
+  - { repo: addyosmani/agent-skills, path: skills/ci-cd-and-automation, commit: 39b723ceebf81474d0557c1fecd01eddab585563 }
+  - { repo: addyosmani/agent-skills, path: skills/debugging-and-error-recovery, commit: 39b723ceebf81474d0557c1fecd01eddab585563 }
+  - { repo: SawyerHood/dev-browser, path: skills/dev-browser, commit: 520ba5cb4fa2856a501376cd8a62fe54a6576549 }
+  - { repo: Leonxlnx/taste-skill, path: skills/taste-skill, commit: f6b76575f949707b4e3c37cd86cb44b0b98643e8 }
+  - { repo: JuliusBrussee/caveman, path: skills/caveman, commit: a192894723a8f47e7f504c7b5041967ff1f18e55 }

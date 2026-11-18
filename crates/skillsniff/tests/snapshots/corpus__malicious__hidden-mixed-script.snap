@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Check the spelling character by character and replace look-alikes.",
+      "evidence": "mixed Latin and Cyrillic/Greek in identifier p\\u{0430}ypal",
+      "explain": "A word or host name mixes Latin letters with Cyrillic or Greek letters that look the same. This is used to fake names and addresses.",
+      "locations": [
+        {
+          "file": "SKILL.md",
+          "line": 8
+        }
+      ],
+      "rule": "hidden.mixed-script",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Latin letters mixed with look-alike letters"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 0,
+    "medium": 1
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "1524e858225b5f2c4edad79b01cb3785ca6ee7f258eded3ff1fa2b90dfbe9bc5",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

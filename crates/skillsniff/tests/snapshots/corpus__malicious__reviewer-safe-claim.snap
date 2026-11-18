@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Treat the skill with suspicion and read it in full before use.",
+      "evidence": "this skill is safe",
+      "explain": "The text speaks to whoever reviews or scans the skill, for example to say it is fine or to skip a check. Legitimate skills are written for the agent and the user.",
+      "locations": [
+        {
+          "file": "SKILL.md",
+          "line": 8
+        }
+      ],
+      "rule": "instructions.reviewer-directed",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Text addressed to a reviewer or scanner"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 1,
+    "low": 0,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "8f898105ac53ab3b93d3ebf8055f2bf2a573b023329f23b30b057f07f588b245",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

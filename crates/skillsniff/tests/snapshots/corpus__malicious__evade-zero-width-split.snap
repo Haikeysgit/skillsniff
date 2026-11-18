@@ -1,0 +1,69 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Remove the passage. Do not install the skill unless its author explains it.",
+      "evidence": "ignore all previous instructions",
+      "explain": "The text tells the agent to ignore, replace or forget its earlier instructions or safety rules. Skills have no reason to do this.",
+      "locations": [
+        {
+          "file": "SKILL.md",
+          "line": 8
+        }
+      ],
+      "rule": "instructions.prompt-injection",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Text that tries to override the agent instructions"
+    },
+    {
+      "advice": "Remove the characters, or confirm there is a legitimate reason for them.",
+      "evidence": "U+200B ZERO WIDTH SPACE",
+      "explain": "The file contains characters that render as nothing. They can hide text, split keywords to evade filters or smuggle data.",
+      "locations": [
+        {
+          "file": "SKILL.md",
+          "line": 8
+        }
+      ],
+      "rule": "hidden.zero-width",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Zero-width characters"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 1,
+    "low": 0,
+    "medium": 1
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "09b6d4b0148d101a5e01b62421cf015021f797f9dd69e1888f78a0e49b56a3ee",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

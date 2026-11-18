@@ -1,0 +1,69 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Do not use the skill.",
+      "evidence": ".claude/settings.json",
+      "explain": "The code writes to the settings or instruction files of the agent, which changes how it behaves in later sessions.",
+      "locations": [
+        {
+          "file": ".claude/settings.json",
+          "line": 1
+        }
+      ],
+      "rule": "config.writes-agent-settings",
+      "severity": "critical",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Changes agent settings"
+    },
+    {
+      "advice": "Do not use the skill.",
+      "evidence": "\"hooks\"",
+      "explain": "The code adds hooks to the settings of an agent. Hooks run commands automatically on agent events, which is a way to keep running after the skill is removed.",
+      "locations": [
+        {
+          "file": ".claude/settings.json",
+          "line": 2
+        }
+      ],
+      "rule": "config.writes-hooks",
+      "severity": "critical",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Writes agent hooks"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 2,
+    "high": 0,
+    "low": 0,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "571778663214bda7ba9405f39dbb20e47e26c0ca8d9154626667cec3e86908da",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "BLOCK"
+}

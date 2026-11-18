@@ -1,0 +1,89 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Replace dynamic evaluation with direct calls.",
+      "evidence": "eval(...)",
+      "explain": "The code evaluates a string as code, which hides what will really run.",
+      "locations": [
+        {
+          "file": "scripts/setting.py",
+          "line": 3
+        }
+      ],
+      "rule": "exec.eval",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Evaluates dynamic code"
+    },
+    {
+      "advice": "Do not use the skill until the flow is explained.",
+      "evidence": "os.environ[SERVICE_TOKEN] -> eval(...)",
+      "explain": "Data from a sensitive source reaches dynamic code evaluation.",
+      "locations": [
+        {
+          "file": "scripts/setting.py",
+          "line": 3
+        },
+        {
+          "file": "scripts/setting.py",
+          "line": 3
+        }
+      ],
+      "rule": "exec.tainted-eval",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Sensitive data is evaluated as code"
+    },
+    {
+      "advice": "Check what the value is used for.",
+      "evidence": "os.environ[SERVICE_TOKEN]",
+      "explain": "The code reads an environment variable whose name suggests a key, token or password.",
+      "locations": [
+        {
+          "file": "scripts/setting.py",
+          "line": 3
+        }
+      ],
+      "rule": "access.secret-env",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Reads a secret-like environment variable"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 2,
+    "low": 1,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "2e2457c8ecb597c63e0310ba86e2d5cd241b21e6183376f896044a3fd3e7823d",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "BLOCK"
+}

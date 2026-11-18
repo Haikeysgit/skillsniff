@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Confirm the skill needs this data.",
+      "evidence": "security find-generic-password -s \"example-service\" -w",
+      "explain": "The code reads from the credential store of the operating system.",
+      "locations": [
+        {
+          "file": "scripts/read.sh",
+          "line": 2
+        }
+      ],
+      "rule": "access.keychain",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Reads the system keychain"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 0,
+    "medium": 1
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "435b4f0cd577b3af2f7e22a818c69e5d8178ec1f09527ed3b5b28128c5f1eb2b",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

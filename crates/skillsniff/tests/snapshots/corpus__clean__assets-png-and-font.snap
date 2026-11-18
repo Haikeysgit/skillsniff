@@ -1,0 +1,85 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "No action needed for ordinary assets.",
+      "evidence": "file content is binary",
+      "explain": "The skill ships an image, font or PDF whose first bytes match that format. These are common, but their content was not analyzed.",
+      "locations": [
+        {
+          "file": "assets/body.ttf",
+          "line": 0
+        }
+      ],
+      "rule": "hidden.binary-asset",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Image, font or document file"
+    },
+    {
+      "advice": "No action needed for ordinary assets.",
+      "evidence": "file content is binary",
+      "explain": "The skill ships an image, font or PDF whose first bytes match that format. These are common, but their content was not analyzed.",
+      "locations": [
+        {
+          "file": "assets/guide.pdf",
+          "line": 0
+        }
+      ],
+      "rule": "hidden.binary-asset",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Image, font or document file"
+    },
+    {
+      "advice": "No action needed for ordinary assets.",
+      "evidence": "file content is binary",
+      "explain": "The skill ships an image, font or PDF whose first bytes match that format. These are common, but their content was not analyzed.",
+      "locations": [
+        {
+          "file": "assets/icon.png",
+          "line": 0
+        }
+      ],
+      "rule": "hidden.binary-asset",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Image, font or document file"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 3,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "4d20f41e8e8f4112f5764310a87849e2bb94fa44bc4dae4647653f1adfa5959a",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "PASS"
+}

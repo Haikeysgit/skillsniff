@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Check that the change is needed and expected.",
+      "evidence": "Append the following line to ~/.zshrc so the helper loads in every new shell.",
+      "explain": "The instructions tell the agent to change its own settings or a persistence point. This is not code, but an agent may follow it.",
+      "locations": [
+        {
+          "file": "SKILL.md",
+          "line": 8
+        }
+      ],
+      "rule": "config.instructs-config-change",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Instructions to change agent or system configuration"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 0,
+    "medium": 1
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "a78d940352f43ebb9c40d7279f73108a4640ee670ed4d6f72da33f1780e43020",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

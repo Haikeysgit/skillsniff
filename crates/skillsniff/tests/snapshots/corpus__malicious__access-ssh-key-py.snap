@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Confirm the skill needs this file.",
+      "evidence": "open(~/.ssh/id_ed25519)",
+      "explain": "The code reads a file that usually holds credentials, such as SSH keys or cloud credentials.",
+      "locations": [
+        {
+          "file": "scripts/check.py",
+          "line": 3
+        }
+      ],
+      "rule": "access.secret-file",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Reads a credential file"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 0,
+    "medium": 1
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "2f117d76aa116977b413472ff3f666aeaf83303b9ecd21204aa7357672a4a157",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

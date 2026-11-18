@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Replace dynamic evaluation with direct calls.",
+      "evidence": "eval(...)",
+      "explain": "The code evaluates a string as code, which hides what will really run.",
+      "locations": [
+        {
+          "file": "scripts/calc.js",
+          "line": 1
+        }
+      ],
+      "rule": "exec.eval",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Evaluates dynamic code"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 1,
+    "low": 0,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "9dd09ed49ba7d4dd0554167f67417e573987fb42ae003f1fd67423e89360f129",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

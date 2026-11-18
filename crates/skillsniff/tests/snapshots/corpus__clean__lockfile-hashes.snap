@@ -1,0 +1,85 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "No action needed if it is a checksum.",
+      "evidence": "3f2a9c4e8b7d1650a9e4c2b8d7f61a03c5e9b4d2",
+      "explain": "A hex string of 40 or 64 characters is present. It is most likely a SHA-1 or SHA-256 checksum.",
+      "locations": [
+        {
+          "file": "checksums.txt",
+          "line": 1
+        }
+      ],
+      "rule": "hidden.high-entropy-hash",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Hash-like hex string"
+    },
+    {
+      "advice": "No action needed if it is a checksum.",
+      "evidence": "9c1185a5c5e9fc54612808977ee8f548b2258d31",
+      "explain": "A hex string of 40 or 64 characters is present. It is most likely a SHA-1 or SHA-256 checksum.",
+      "locations": [
+        {
+          "file": "checksums.txt",
+          "line": 2
+        }
+      ],
+      "rule": "hidden.high-entropy-hash",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Hash-like hex string"
+    },
+    {
+      "advice": "No action needed if it is a checksum.",
+      "evidence": "b1946ac92492d2347c6235b4d2611184f5a8c3d9",
+      "explain": "A hex string of 40 or 64 characters is present. It is most likely a SHA-1 or SHA-256 checksum.",
+      "locations": [
+        {
+          "file": "checksums.txt",
+          "line": 3
+        }
+      ],
+      "rule": "hidden.high-entropy-hash",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Hash-like hex string"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 3,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "91e6eaaa74c092c8eb473b326f127a0d28c45954e55b1a8b073636935b6d3610",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "PASS"
+}

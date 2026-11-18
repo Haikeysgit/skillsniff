@@ -1,0 +1,4 @@
+verdict: CAUTION
+must_find:
+  - exfil.secret-to-network
+known_gap: true

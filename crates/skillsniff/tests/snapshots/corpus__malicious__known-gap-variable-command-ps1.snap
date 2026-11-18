@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Check the command and where its arguments come from.",
+      "evidence": "powershell -Command $cmd",
+      "explain": "The code starts another program or shell command.",
+      "locations": [
+        {
+          "file": "scripts/install.ps1",
+          "line": 4
+        }
+      ],
+      "rule": "exec.run-command",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Runs a command"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 1,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "8c20fe7d211b5e6405cb18fa89c67ce1695d4df376a0831e4ebbb63093a55b6d",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "PASS"
+}

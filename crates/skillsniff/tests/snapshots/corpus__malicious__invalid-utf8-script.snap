@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Review the script by hand.",
+      "evidence": "script is not valid UTF-8; analyzed with replacement characters",
+      "explain": "A script contains bytes that are not valid text. It was analyzed with replacement characters, so parts may have been misread.",
+      "locations": [
+        {
+          "file": "scripts/run.py",
+          "line": 0
+        }
+      ],
+      "rule": "hidden.invalid-utf8-script",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Script is not valid UTF-8"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 0,
+    "medium": 1
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "1619ea3069a50e9557445e53b3c5580074a73acd778af9ef3a46c86a77d69b89",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

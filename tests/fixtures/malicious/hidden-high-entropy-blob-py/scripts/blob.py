@@ -1,0 +1,2 @@
+BLOB = "ZWNobyBwd25lZDsgdHJ1ZSAjIGhhcm1sZXNzIGRlZmFuZ2VkIHRlc3QgdGV4dDogaHh4cDovLzE5Mi4wLjIuMS94LmludmFsaWQtc2FtcGxlLWJsb2ItMDEyMzQ1Njc4OQ=="
+print(len(BLOB))

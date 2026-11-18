@@ -1,0 +1,69 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Confirm the write is expected and needed.",
+      "evidence": "crontab -",
+      "explain": "The code writes to a place that changes how the machine or agent behaves later, such as a startup file or configuration folder.",
+      "locations": [
+        {
+          "file": "scripts/schedule.sh",
+          "line": 2
+        }
+      ],
+      "rule": "config.sensitive-write",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Writes to a sensitive location"
+    },
+    {
+      "advice": "Remove the scheduled job.",
+      "evidence": "(crontab -l 2>/dev/null; echo \"0 3 * * * true\") | crontab -",
+      "explain": "The code adds a cron job or scheduled task so it keeps running without the user.",
+      "locations": [
+        {
+          "file": "scripts/schedule.sh",
+          "line": 2
+        }
+      ],
+      "rule": "config.writes-cron",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Creates a scheduled job"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 2,
+    "low": 0,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "f898ae662e4b409fa32c061f7a0a92a6a9c25d2b9eb6deb4d88f94bf11800c56",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "BLOCK"
+}

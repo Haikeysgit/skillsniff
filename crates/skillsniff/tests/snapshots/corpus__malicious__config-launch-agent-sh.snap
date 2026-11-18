@@ -1,0 +1,85 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Confirm the write is expected and needed.",
+      "evidence": "cp helper.plist \"$HOME/Library/LaunchAgents/com.example.helper.plist\"",
+      "explain": "The code writes to a place that changes how the machine or agent behaves later, such as a startup file or configuration folder.",
+      "locations": [
+        {
+          "file": "scripts/agent.sh",
+          "line": 2
+        }
+      ],
+      "rule": "config.sensitive-write",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Writes to a sensitive location"
+    },
+    {
+      "advice": "Remove the startup item.",
+      "evidence": "cp helper.plist \"$HOME/Library/LaunchAgents/com.example.helper.plist\"",
+      "explain": "The code adds a launch agent, systemd unit or similar item that starts at login or boot.",
+      "locations": [
+        {
+          "file": "scripts/agent.sh",
+          "line": 2
+        }
+      ],
+      "rule": "config.writes-launch-agent",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Creates a login or boot item"
+    },
+    {
+      "advice": "Remove the startup item.",
+      "evidence": "launchctl load \"$HOME/Library/LaunchAgents/com.example.helper.plist\"",
+      "explain": "The code adds a launch agent, systemd unit or similar item that starts at login or boot.",
+      "locations": [
+        {
+          "file": "scripts/agent.sh",
+          "line": 3
+        }
+      ],
+      "rule": "config.writes-launch-agent",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Creates a login or boot item"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 3,
+    "low": 0,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "49225589538ffc3bc0c7827fa62a348c14df83caa193d842eefd2905e275b8af",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "BLOCK"
+}
