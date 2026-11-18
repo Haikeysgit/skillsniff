@@ -16,12 +16,12 @@ use std::sync::OnceLock;
 use tree_sitter::{Language, Node, Query, Tree};
 
 use super::common::{
-    Bind, Call, Core, MAX_FOLD_NODES, MAX_NAME_SEGMENTS, TEXT_CHARS, last_segment, line,
-    named_children, run_query,
+    Bind, Call, Core, MAX_FOLD_NODES, MAX_NAME_SEGMENTS, TEXT_CHARS, last_segment, line, run_query,
 };
 use super::patterns::{
-    DOWNLOAD_EXEC, EVAL, EXEC, NETWORK, REVERSE_SHELL, SENSITIVE_WRITE, env_class,
-    is_sensitive_write_path, literal_source_class, normalize_path, pipes_download_to_shell,
+    DOWNLOAD_EXEC, ENV_LAUNCHERS, EVAL, EXEC, NETWORK, REVERSE_SHELL, SENSITIVE_WRITE, SHELL_FLAGS,
+    SHELLS, UNKNOWN_PIECE, env_class, is_sensitive_write_path, literal_source_class,
+    normalize_path, pipes_download_to_shell,
 };
 use super::taint::{Facts, Site};
 use super::{LangRules, clip};
@@ -74,20 +74,6 @@ const EXEC_FUNCS: &[&str] = &[
     "execFile",
     "execFileSync",
     "fork",
-];
-const SHELLS: &[&str] = &[
-    "sh",
-    "bash",
-    "zsh",
-    "/bin/sh",
-    "/bin/bash",
-    "/bin/zsh",
-    "/usr/bin/bash",
-    "cmd",
-    "cmd.exe",
-    "powershell",
-    "powershell.exe",
-    "pwsh",
 ];
 /// Constructors whose result is a network client: after `s = <ctor>(...)`,
 /// `s.write(...)` resolves to `<ctor>().write(...)`. A `fetch` response is
@@ -144,6 +130,14 @@ const KNOWN_ROOTS: &[&str] = &[
     "XMLHttpRequest",
     "Deno",
     "Bun",
+    "require",
+    "module",
+    "globalThis",
+    "window",
+    "global",
+    "self",
+    "setTimeout",
+    "setInterval",
 ];
 /// Wrappers that do not change what an expression names.
 const TRANSPARENT: &[&str] = &[
@@ -206,12 +200,41 @@ fn module_name(spec: &str) -> String {
     spec.strip_prefix("node:").unwrap_or(spec).replace('/', ".")
 }
 
-/// Drops a leading `globalThis.`, `window.` or `global.`.
-fn strip_global(name: &str) -> &str {
-    ["globalThis.", "window.", "global."]
-        .iter()
-        .find_map(|p| name.strip_prefix(p))
-        .unwrap_or(name)
+/// Drops leading `globalThis.`, `window.`, `global.` and `self.`.
+fn strip_global(mut name: &str) -> &str {
+    for _ in 0..MAX_NAME_SEGMENTS {
+        match ["globalThis.", "window.", "global.", "self."]
+            .iter()
+            .find_map(|p| name.strip_prefix(p))
+        {
+            Some(rest) => name = rest,
+            None => break,
+        }
+    }
+    name
+}
+
+/// `setTimeout`/`setInterval`, which evaluate a string first argument.
+fn is_timer(name: &str) -> bool {
+    matches!(strip_global(name), "setTimeout" | "setInterval")
+}
+
+/// Whether a resolved name loads modules like `require`.
+fn is_require(name: &str) -> bool {
+    matches!(strip_global(name), "require" | "module.require")
+}
+
+/// Names the rules classify: a call resolving to one of these is preferred
+/// over its other possible meanings.
+fn relevant(name: &str) -> bool {
+    sink_class(name).is_some()
+        || is_env_call(name)
+        || is_connect(name)
+        || is_path_builder(name)
+        || is_timer(name)
+        || name == "os.homedir"
+        || name.starts_with("fs.")
+        || last_segment(name) == "pipe"
 }
 
 fn dots(name: &str) -> usize {
@@ -299,25 +322,6 @@ fn env_member(name: &str) -> Option<&str> {
     (!key.is_empty() && !key.contains(['.', '('])).then_some(key)
 }
 
-/// Unwraps parentheses, `await` and type assertions.
-fn unwrap(mut node: Node) -> Node {
-    for _ in 0..MAX_NAME_SEGMENTS {
-        if !TRANSPARENT.contains(&node.kind()) {
-            break;
-        }
-        let inner = if node.kind() == "type_assertion" {
-            node.named_child(1)
-        } else {
-            node.named_child(0)
-        };
-        match inner {
-            Some(n) => node = n,
-            None => break,
-        }
-    }
-    node
-}
-
 enum FoldItem<'t> {
     Node(Node<'t>),
     Sep,
@@ -336,6 +340,12 @@ struct Extract<'t> {
     env_patterns: Vec<(Node<'t>, String, String)>,
     /// Enclosing functions: the name a `return` binds, and the end byte.
     funcs: Vec<(Option<String>, usize)>,
+    /// Names declared as functions anywhere in the file.
+    fn_names: HashSet<String>,
+    /// Callback bindings whose first-argument range is a plain name: bind
+    /// index, the name and its range. Dropped at the end when the name is a
+    /// function.
+    callback_firsts: Vec<(usize, String, (usize, usize))>,
 }
 
 impl<'t> Extract<'t> {
@@ -347,6 +357,8 @@ impl<'t> Extract<'t> {
             members: Vec::new(),
             env_patterns: Vec::new(),
             funcs: Vec::new(),
+            fn_names: HashSet::new(),
+            callback_firsts: Vec::new(),
         }
     }
 
@@ -364,21 +376,72 @@ impl<'t> Extract<'t> {
         }
     }
 
-    /// Module of a `require("m")` or `import("m")` call.
+    /// Unwraps parentheses, `await` and type assertions.
+    fn unwrap<'n>(&self, mut node: Node<'n>) -> Node<'n> {
+        for _ in 0..MAX_NAME_SEGMENTS {
+            if !TRANSPARENT.contains(&node.kind()) {
+                break;
+            }
+            let inner = if node.kind() == "type_assertion" {
+                self.core.children(node).last().copied()
+            } else {
+                self.core.first_child(node)
+            };
+            match inner {
+                Some(n) => node = n,
+                None => break,
+            }
+        }
+        node
+    }
+
+    /// Resolved name of a plain or one-level dotted name (`require`,
+    /// `module.require`), without walking into calls.
+    fn simple_name(&self, node: Node) -> Option<Vec<String>> {
+        let node = self.unwrap(node);
+        let simple = match node.kind() {
+            "identifier" => true,
+            "member_expression" => node
+                .child_by_field_name("object")
+                .is_some_and(|o| o.kind() == "identifier"),
+            _ => false,
+        };
+        if !simple {
+            return None;
+        }
+        self.dotted(node, false).map(|n| self.core.resolutions(&n))
+    }
+
+    /// Whether `call` is `createRequire(...)`, which returns a `require`.
+    fn is_create_require(&self, call: Node) -> bool {
+        call.kind() == "call_expression"
+            && call
+                .child_by_field_name("function")
+                .and_then(|f| self.simple_name(f))
+                .is_some_and(|all| all.iter().any(|n| last_segment(n) == "createRequire"))
+    }
+
+    /// Module of a module-loading call: `require("m")`, `import("m")`, an
+    /// alias of `require`, `module.require("m")` or
+    /// `createRequire(url)("m")`.
     fn required(&self, call: Node) -> Option<String> {
         if call.kind() != "call_expression" {
             return None;
         }
-        let f = call.child_by_field_name("function")?;
+        let f = self.unwrap(call.child_by_field_name("function")?);
         let loads = match f.kind() {
-            "identifier" => self.text(f) == "require",
             "import" => true,
-            _ => false,
+            "call_expression" => self.is_create_require(f),
+            _ => self
+                .simple_name(f)
+                .is_some_and(|all| all.iter().any(|n| is_require(n))),
         };
         if !loads {
             return None;
         }
-        let arg = call.child_by_field_name("arguments")?.named_child(0)?;
+        let arg = self
+            .core
+            .first_child(call.child_by_field_name("arguments")?)?;
         (arg.kind() == "string").then(|| module_name(string_content(self.text(arg))))
     }
 
@@ -426,13 +489,10 @@ impl<'t> Extract<'t> {
                     cur = cur.child_by_field_name("constructor")?;
                 }
                 "sequence_expression" => {
-                    let n = u32::try_from(cur.named_child_count())
-                        .ok()?
-                        .checked_sub(1)?;
-                    cur = cur.named_child(n)?;
+                    cur = self.core.children(cur).last().copied()?;
                 }
                 k if TRANSPARENT.contains(&k) => {
-                    let inner = unwrap(cur);
+                    let inner = self.unwrap(cur);
                     if inner == cur {
                         return None;
                     }
@@ -454,28 +514,43 @@ impl<'t> Extract<'t> {
         self.dotted(f, true)
     }
 
+    /// Resolved name of a call, for folding paths.
     fn callee(&self, node: Node) -> Option<String> {
-        self.callee_of(node).map(|n| self.core.resolve(&n))
+        let name = self.callee_of(node)?;
+        Some(
+            self.core
+                .resolve_best(&name, |n| is_path_builder(n) || n == "os.homedir"),
+        )
     }
 
-    /// What a value names when it stands for a module or a known global:
-    /// `require("m")`, `import("m")`, `require("m").x`, an alias, or a dotted
-    /// name under a known root.
-    fn module_path(&self, value: Node) -> Option<String> {
-        let value = unwrap(value);
+    /// Everything a value may name when it stands for a module or a known
+    /// global: `require("m")`, `import("m")`, `require("m").x`,
+    /// `createRequire(url)`, an alias, or a dotted name under a known root.
+    fn module_paths(&self, value: Node) -> Vec<String> {
+        let value = self.unwrap(value);
         if let Some(m) = self.required(value) {
-            return Some(m);
+            return vec![m];
+        }
+        if self.is_create_require(value) {
+            return vec!["require".to_string()];
         }
         if !matches!(
             value.kind(),
             "identifier" | "member_expression" | "subscript_expression"
         ) {
-            return None;
+            return Vec::new();
         }
-        let name = self.dotted(value, false)?;
-        let full = self.core.resolve(&name);
-        let root = full.split(['.', '(']).next().unwrap_or("");
-        (full != name || KNOWN_ROOTS.contains(&root)).then_some(full)
+        let Some(name) = self.dotted(value, false) else {
+            return Vec::new();
+        };
+        let all = self.core.resolutions(&name);
+        let aliased = all.len() != 1 || all[0] != name;
+        all.into_iter()
+            .filter(|full| {
+                let root = full.split(['.', '(']).next().unwrap_or("");
+                aliased || KNOWN_ROOTS.contains(&root)
+            })
+            .collect()
     }
 
     /// Variable names bound by a target or parameter list.
@@ -508,7 +583,7 @@ impl<'t> Extract<'t> {
                 | "rest_pattern"
                 | "formal_parameters"
                 | "parenthesized_expression"
-                | "non_null_expression" => stack.extend(named_children(n)),
+                | "non_null_expression" => stack.extend(self.core.children(n)),
                 _ => {}
             }
         }
@@ -516,14 +591,12 @@ impl<'t> Extract<'t> {
     }
 
     fn bind(&mut self, targets: Vec<String>, rhs: Option<Node>, end: Option<usize>, line: u32) {
-        let rhs_callee = rhs.and_then(|r| self.callee_of(unwrap(r)));
+        let rhs_callee = rhs.and_then(|r| self.callee_of(self.unwrap(r)));
         self.core.bind(targets, rhs, end, line, rhs_callee);
     }
 
-    fn alias(&mut self, local: &str, full: String) {
-        if local != full {
-            self.core.aliases.insert(local.to_string(), full);
-        }
+    fn alias(&mut self, local: &str, full: &str) {
+        self.core.add_alias(local, strip_global(full).to_string());
     }
 
     /// First pass. Returns false when the time budget ran out.
@@ -544,7 +617,7 @@ impl<'t> Extract<'t> {
             }
             "str" => {
                 let substituted = node.kind() == "template_string"
-                    && named_children(node).any(|c| c.kind() == "template_substitution");
+                    && self.core.has_child_kind(node, "template_substitution");
                 if substituted {
                     self.folds.push(node);
                 } else {
@@ -616,6 +689,7 @@ impl<'t> Extract<'t> {
             ("method_definition", Some(n)) => self.prop_name(n).map(|p| format!("this.{p}")),
             (_, Some(n)) if n.kind() == "identifier" => {
                 self.core.not_values.insert(n.start_byte());
+                self.fn_names.insert(self.text(n).to_string());
                 Some(self.text(n).to_string())
             }
             _ => None,
@@ -623,8 +697,32 @@ impl<'t> Extract<'t> {
         self.funcs.push((bound, node.end_byte()));
     }
 
+    /// First parameter node of a function, looking through TypeScript
+    /// parameter wrappers and defaults.
+    fn first_param(&self, f: Node<'t>) -> Option<Node<'t>> {
+        let mut p = match f.child_by_field_name("parameter") {
+            Some(p) => p,
+            None => self
+                .core
+                .first_child(f.child_by_field_name("parameters")?)?,
+        };
+        for _ in 0..4 {
+            p = match p.kind() {
+                "required_parameter" | "optional_parameter" => p.child_by_field_name("pattern")?,
+                "assignment_pattern" => p.child_by_field_name("left")?,
+                _ => return Some(p),
+            };
+        }
+        Some(p)
+    }
+
     /// Records a call. Parameters of a callback passed to it receive the
-    /// call's result, its receiver and its other arguments.
+    /// call's result, its receiver and its first argument when that is a
+    /// value (the path of `fs.readFile(path, cb)`). They never take taint
+    /// from other arguments (the data of `fs.writeFile(path, data, cb)`),
+    /// from sibling callbacks, or from a first argument that names a
+    /// function. `import("m").then(cb)` makes `cb`'s first parameter an
+    /// alias of module `m`.
     fn call(&mut self, node: Node<'t>, ln: u32) {
         let callee = self.callee_of(node);
         let args = node.child_by_field_name("arguments");
@@ -632,27 +730,43 @@ impl<'t> Extract<'t> {
         let Some(args) = args.filter(|a| a.kind() == "arguments") else {
             return;
         };
-        let mut params = Vec::new();
-        let mut ranges = Vec::new();
-        for a in named_children(args) {
-            if matches!(a.kind(), "arrow_function" | "function_expression") {
-                let p = a
-                    .child_by_field_name("parameters")
-                    .or_else(|| a.child_by_field_name("parameter"));
-                params.extend(p.map(|p| self.targets(p)).unwrap_or_default());
-            } else {
-                ranges.push((a.start_byte(), a.end_byte()));
-            }
-        }
-        if params.is_empty() {
+        let args = self.core.children(args);
+        let is_fn = |a: &Node| matches!(a.kind(), "arrow_function" | "function_expression");
+        let callbacks: Vec<Node<'t>> = args.iter().copied().filter(is_fn).collect();
+        let Some(first_cb) = callbacks.first().copied() else {
             return;
-        }
-        let receiver = node
+        };
+        let member = node
             .child_by_field_name("function")
-            .filter(|f| f.kind() == "member_expression")
-            .and_then(|f| f.child_by_field_name("object"));
-        ranges.extend(receiver.map(|r| (r.start_byte(), r.end_byte())));
+            .filter(|f| f.kind() == "member_expression");
+        let receiver = member.and_then(|f| f.child_by_field_name("object"));
+        let then = member
+            .and_then(|f| f.child_by_field_name("property"))
+            .is_some_and(|p| self.text(p) == "then");
+        if then
+            && let Some(m) = receiver.and_then(|r| self.required(self.unwrap(r)))
+            && let Some(p) = self.first_param(first_cb)
+        {
+            self.alias_pattern(p, &m);
+        }
+
+        let mut params = Vec::new();
+        for cb in &callbacks {
+            let p = cb
+                .child_by_field_name("parameters")
+                .or_else(|| cb.child_by_field_name("parameter"));
+            params.extend(p.map(|p| self.targets(p)).unwrap_or_default());
+        }
+        let mut ranges: Vec<(usize, usize)> = receiver
+            .map(|r| (r.start_byte(), r.end_byte()))
+            .into_iter()
+            .collect();
+        let first = args.first().copied().filter(|a| !is_fn(a));
+        if let Some(a) = first {
+            ranges.push((a.start_byte(), a.end_byte()));
+        }
         let id = self.core.calls.last().map(|c| c.id.clone());
+        let before = self.core.binds.len();
         self.core.push_bind(Bind {
             targets: params,
             ranges,
@@ -660,6 +774,13 @@ impl<'t> Extract<'t> {
             line: ln,
             rhs_callee: None,
         });
+        if let Some(a) = first.filter(|a| a.kind() == "identifier")
+            && self.core.binds.len() > before
+        {
+            let range = (a.start_byte(), a.end_byte());
+            self.callback_firsts
+                .push((before, self.text(a).to_string(), range));
+        }
     }
 
     fn declarator(&mut self, node: Node<'t>, ln: u32) {
@@ -669,7 +790,15 @@ impl<'t> Extract<'t> {
         let Some(value) = node.child_by_field_name("value") else {
             return;
         };
-        if let Some(full) = self.module_path(value) {
+        if name.kind() == "identifier"
+            && matches!(
+                self.unwrap(value).kind(),
+                "arrow_function" | "function_expression"
+            )
+        {
+            self.fn_names.insert(self.text(name).to_string());
+        }
+        for full in self.module_paths(value) {
             self.alias_pattern(name, &full);
         }
         if self.bind_pairs(name, Some(value), ln) {
@@ -683,9 +812,9 @@ impl<'t> Extract<'t> {
     /// destructuring `process.env` records environment reads instead.
     fn alias_pattern(&mut self, pattern: Node<'t>, full: &str) {
         match pattern.kind() {
-            "identifier" => self.alias(self.text(pattern), full.to_string()),
+            "identifier" => self.alias(self.text(pattern), full),
             "object_pattern" => {
-                for p in named_children(pattern) {
+                for p in self.core.children(pattern).into_iter() {
                     let pair = match p.kind() {
                         "shorthand_property_identifier_pattern" => Some((p, p)),
                         "object_assignment_pattern" => {
@@ -722,7 +851,7 @@ impl<'t> Extract<'t> {
                         self.env_patterns
                             .push((p, key.to_string(), local.to_string()));
                     } else {
-                        self.alias(local, format!("{full}.{key}"));
+                        self.alias(local, &format!("{full}.{key}"));
                     }
                 }
             }
@@ -785,13 +914,17 @@ impl<'t> Extract<'t> {
 
     fn import(&mut self, node: Node<'t>) {
         let source = self.source_module(node);
-        for c in named_children(node) {
+        for c in self.core.children(node).into_iter() {
             match (c.kind(), &source) {
                 ("import_clause", Some(m)) => self.import_clause(c, m),
                 ("import_require_clause", _) => {
-                    let local = named_children(c).find(|n| n.kind() == "identifier");
+                    let local = self
+                        .core
+                        .children(c)
+                        .into_iter()
+                        .find(|n| n.kind() == "identifier");
                     if let (Some(m), Some(l)) = (self.source_module(c), local) {
-                        self.alias(self.text(l), m);
+                        self.alias(self.text(l), &m);
                     }
                 }
                 _ => {}
@@ -800,16 +933,26 @@ impl<'t> Extract<'t> {
     }
 
     fn import_clause(&mut self, clause: Node<'t>, module: &str) {
-        for c in named_children(clause) {
+        for c in self.core.children(clause).into_iter() {
             match c.kind() {
-                "identifier" => self.alias(self.text(c), module.to_string()),
+                "identifier" => self.alias(self.text(c), module),
                 "namespace_import" => {
-                    if let Some(id) = named_children(c).find(|n| n.kind() == "identifier") {
-                        self.alias(self.text(id), module.to_string());
+                    if let Some(id) = self
+                        .core
+                        .children(c)
+                        .into_iter()
+                        .find(|n| n.kind() == "identifier")
+                    {
+                        self.alias(self.text(id), module);
                     }
                 }
                 "named_imports" => {
-                    for s in named_children(c).filter(|s| s.kind() == "import_specifier") {
+                    for s in self
+                        .core
+                        .children(c)
+                        .into_iter()
+                        .filter(|s| s.kind() == "import_specifier")
+                    {
                         let Some(name) = s.child_by_field_name("name") else {
                             continue;
                         };
@@ -822,7 +965,7 @@ impl<'t> Extract<'t> {
                         } else {
                             format!("{module}.{name}")
                         };
-                        self.alias(local, full);
+                        self.alias(local, &full);
                     }
                 }
                 _ => {}
@@ -841,7 +984,7 @@ impl<'t> Extract<'t> {
         let mut stack = vec![FoldItem::Node(node)];
         let mut steps = 0;
         let push_children = |stack: &mut Vec<FoldItem<'t>>, n: Node<'t>, sep: bool| {
-            let kids: Vec<Node<'t>> = named_children(n).collect();
+            let kids: Vec<Node<'t>> = self.core.children(n).into_iter().collect();
             for (i, c) in kids.into_iter().enumerate().rev() {
                 stack.push(FoldItem::Node(c));
                 if sep && i > 0 {
@@ -890,11 +1033,12 @@ impl<'t> Extract<'t> {
                     }
                 }
                 "member_expression" => {
-                    let name = self.dotted(n, false).map(|d| self.core.resolve(&d));
-                    if matches!(
-                        name.as_deref().and_then(env_member),
-                        Some("HOME" | "USERPROFILE")
-                    ) {
+                    let home = self.dotted(n, false).and_then(|d| {
+                        self.core.resolve_where(&d, |r| {
+                            matches!(env_member(r), Some("HOME" | "USERPROFILE"))
+                        })
+                    });
+                    if home.is_some() {
                         out.push('~');
                     }
                 }
@@ -961,7 +1105,12 @@ impl<'t> Extract<'t> {
     /// variables.
     fn env_members(&mut self) {
         for m in std::mem::take(&mut self.members) {
-            let Some(name) = self.dotted(m, false).map(|d| self.core.resolve(&d)) else {
+            let found = self.dotted(m, false).and_then(|d| {
+                self.core.resolve_where(&d, |r| {
+                    env_member(r).is_some_and(|k| env_class(k).is_some())
+                })
+            });
+            let Some(name) = found else {
                 continue;
             };
             let Some(key) = env_member(&name) else {
@@ -1008,7 +1157,7 @@ impl<'t> Extract<'t> {
             }
             let key = c
                 .args
-                .and_then(|a| a.named_child(0))
+                .and_then(|a| self.core.first_child(a))
                 .filter(|k| k.kind() == "string")
                 .map(|k| string_content(self.text(k)));
             if let Some((key, class)) = key.and_then(|k| Some((k, env_class(k)?))) {
@@ -1021,27 +1170,90 @@ impl<'t> Extract<'t> {
     }
 
     /// Positional arguments of a call (up to 8), comments skipped.
-    fn positional(args: Node<'t>) -> Vec<Node<'t>> {
-        named_children(args)
-            .filter(|a| a.kind() != "comment")
-            .take(8)
-            .collect()
+    fn positional(&self, args: Node<'t>) -> Vec<Node<'t>> {
+        self.core.children(args).into_iter().take(8).collect()
     }
 
     fn is_str(n: &Node) -> bool {
         matches!(n.kind(), "string" | "template_string")
     }
 
-    /// Whether the first argument names a shell, as in `spawn("/bin/sh")`.
+    /// Text of a command built from string and template literals and `+`.
+    /// Other pieces stand in as an unknown character. `None` when no literal
+    /// is involved.
+    fn command_text(&self, node: Node<'t>) -> Option<String> {
+        let mut out = String::new();
+        let mut literal = false;
+        let mut stack = vec![node];
+        let mut steps = 0;
+        while let Some(n) = stack.pop() {
+            steps += 1;
+            if steps > MAX_FOLD_NODES {
+                self.core.truncate();
+                break;
+            }
+            match n.kind() {
+                "string" => {
+                    literal = true;
+                    out.push_str(string_content(self.text(n)));
+                }
+                "string_fragment" | "escape_sequence" => out.push_str(self.text(n)),
+                "template_string" => {
+                    literal = true;
+                    stack.extend(self.core.children(n).into_iter().rev());
+                }
+                "template_substitution" | "parenthesized_expression" => {
+                    stack.extend(self.core.children(n).into_iter().rev());
+                }
+                "binary_expression"
+                    if n.child_by_field_name("operator").map(|o| o.kind()) == Some("+") =>
+                {
+                    stack.extend(n.child_by_field_name("right"));
+                    stack.extend(n.child_by_field_name("left"));
+                }
+                _ => out.push(UNKNOWN_PIECE),
+            }
+        }
+        literal.then_some(out)
+    }
+
+    /// The program and argument words of `spawn(prog, [args])`-style calls,
+    /// with an `env` launcher dropped, when the program is a literal.
+    fn argv(&self, c: &Call<'t>) -> Vec<String> {
+        let Some(args) = c.args.filter(|a| a.kind() == "arguments") else {
+            return Vec::new();
+        };
+        let pos = self.positional(args);
+        let Some(prog) = pos.first().and_then(|f| self.command_text(*f)) else {
+            return Vec::new();
+        };
+        let mut words = vec![prog];
+        if let Some(arr) = pos.get(1).filter(|a| a.kind() == "array") {
+            words.extend(
+                self.core
+                    .children(*arr)
+                    .into_iter()
+                    .filter_map(|n| self.command_text(n)),
+            );
+        }
+        if ENV_LAUNCHERS.contains(&words[0].as_str()) {
+            words.remove(0);
+        }
+        words
+    }
+
+    /// Whether the call starts a shell, as in `spawn("/bin/sh")` or
+    /// `spawn("/usr/bin/env", ["bash", ...])`.
     fn spawns_shell(&self, c: &Call<'t>) -> bool {
-        let first = c.args.and_then(|a| Self::positional(a).first().copied());
-        first.is_some_and(|f| Self::is_str(&f) && SHELLS.contains(&string_content(self.text(f))))
+        self.argv(c)
+            .first()
+            .is_some_and(|p| SHELLS.contains(&p.as_str()))
     }
 
     /// Whether an options object passes `shell` (other than `false`).
     fn shell_option(&self, args: &[Node<'t>]) -> bool {
         args.iter().filter(|a| a.kind() == "object").any(|o| {
-            named_children(*o).any(|p| {
+            self.core.children(*o).into_iter().any(|p| {
                 p.kind() == "pair"
                     && p.child_by_field_name("key")
                         .is_some_and(|k| string_content(self.text(k)) == "shell")
@@ -1058,36 +1270,39 @@ impl<'t> Extract<'t> {
             return false;
         };
         if args.kind() == "template_string" {
-            return pipes_download_to_shell(self.text(args));
+            return self
+                .command_text(args)
+                .is_some_and(|t| pipes_download_to_shell(&t));
         }
-        let pos = Self::positional(args);
+        let pos = self.positional(args);
         let Some(first) = pos.first().copied() else {
             return false;
         };
         let shell_cmd = matches!(last_segment(name), "exec" | "execSync");
-        let commands: Vec<Node> = if Self::is_str(&first) && (shell_cmd || self.shell_option(&pos))
-        {
-            vec![first]
-        } else if self.spawns_shell(c) {
-            match pos.get(1).filter(|a| a.kind() == "array") {
-                Some(arr) => {
-                    let items: Vec<Node> = named_children(*arr).filter(Self::is_str).collect();
-                    let flag = items.iter().any(|n| {
-                        matches!(
-                            string_content(self.text(*n)),
-                            "-c" | "/c" | "-Command" | "-command"
-                        )
-                    });
-                    if flag { items } else { Vec::new() }
-                }
-                None => Vec::new(),
-            }
+        let commands: Vec<String> = if shell_cmd || self.shell_option(&pos) {
+            self.command_text(first).into_iter().collect()
         } else {
-            Vec::new()
+            let words = self.argv(c);
+            let shell = words.first().is_some_and(|p| SHELLS.contains(&p.as_str()));
+            if shell && words.iter().any(|w| SHELL_FLAGS.contains(&w.as_str())) {
+                words
+            } else {
+                Vec::new()
+            }
         };
-        commands
-            .iter()
-            .any(|n| pipes_download_to_shell(self.text(*n)))
+        commands.iter().any(|t| pipes_download_to_shell(t))
+    }
+
+    /// Whether `setTimeout`/`setInterval` gets code as a string.
+    fn timer_evaluates(&self, c: &Call<'t>) -> bool {
+        let first = c
+            .args
+            .filter(|a| a.kind() == "arguments")
+            .and_then(|a| self.core.first_child(a));
+        first.is_some_and(|f| {
+            let f = self.unwrap(f);
+            Self::is_str(&f) || (f.kind() == "binary_expression" && self.command_text(f).is_some())
+        })
     }
 
     /// Whether an `fs` call writes to a path that a sensitive literal reaches.
@@ -1098,7 +1313,7 @@ impl<'t> Extract<'t> {
         let Some(args) = c.args else {
             return false;
         };
-        let pos = Self::positional(args);
+        let pos = self.positional(args);
         let path = match last_segment(name) {
             "writeFile" | "writeFileSync" | "appendFile" | "appendFileSync"
             | "createWriteStream" | "truncate" | "truncateSync" => pos.first(),
@@ -1142,6 +1357,7 @@ impl<'t> Extract<'t> {
             let class = match sink_class(name) {
                 Some(EXEC) if self.runs_fetch_pipe(c, name) => Some(DOWNLOAD_EXEC),
                 Some(class) => Some(class),
+                None if is_timer(name) => self.timer_evaluates(c).then_some(EVAL),
                 None => self
                     .writes_sensitive(c, name, sensitive)
                     .then_some(SENSITIVE_WRITE),
@@ -1167,7 +1383,14 @@ impl<'t> Extract<'t> {
 
     /// Second pass: classify, resolve references and build the facts.
     fn finish(mut self) -> Facts {
-        self.core.resolve_calls(CLIENT_CONSTRUCTORS);
+        self.core.resolve_calls(CLIENT_CONSTRUCTORS, relevant);
+        for (i, name, range) in std::mem::take(&mut self.callback_firsts) {
+            if self.fn_names.contains(&name)
+                && let Some(b) = self.core.binds.get_mut(i)
+            {
+                b.ranges.retain(|r| *r != range);
+            }
+        }
         let spans = self.literal_sites();
         self.fold_sites(&spans);
         self.env_members();

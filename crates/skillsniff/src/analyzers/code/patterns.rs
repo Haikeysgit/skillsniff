@@ -29,6 +29,38 @@ pub const SENSITIVE_WRITE: &str = "sensitive_write";
 pub const DOWNLOAD_EXEC: &str = "download_exec";
 pub const REVERSE_SHELL: &str = "reverse_shell";
 
+/// Shell programs, as the first word of a command vector.
+pub const SHELLS: &[&str] = &[
+    "sh",
+    "bash",
+    "dash",
+    "zsh",
+    "ksh",
+    "/bin/sh",
+    "/bin/bash",
+    "/bin/dash",
+    "/bin/zsh",
+    "/usr/bin/sh",
+    "/usr/bin/bash",
+    "/usr/bin/dash",
+    "/usr/bin/zsh",
+    "cmd",
+    "cmd.exe",
+    "powershell",
+    "powershell.exe",
+    "pwsh",
+];
+
+/// `env` launchers that run the program named by the next word.
+pub const ENV_LAUNCHERS: &[&str] = &["env", "/usr/bin/env", "/bin/env"];
+
+/// Flags that make a shell run the next word as a command.
+pub const SHELL_FLAGS: &[&str] = &["-c", "/c", "-Command", "-command"];
+
+/// Stands for a non-literal piece when command text is folded, so that
+/// pieces on either side of it never join into a word.
+pub const UNKNOWN_PIECE: char = '\u{1}';
+
 /// Credential directories, matched as a whole path segment.
 const SECRET_DIRS: &[&str] = &[".ssh", ".aws", ".kube", ".docker", ".gnupg"];
 

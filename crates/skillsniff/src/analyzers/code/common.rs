@@ -29,6 +29,8 @@ const MAX_TOTAL_REFS: usize = 2_000_000;
 pub(super) const MAX_NAME_SEGMENTS: usize = 32;
 pub(super) const MAX_FOLD_NODES: usize = 256;
 pub(super) const MAX_CHILDREN: u32 = 64;
+/// Distinct meanings kept per alias or object name.
+const MAX_RESOLUTIONS: usize = 16;
 pub(super) const TEXT_CHARS: usize = 80;
 /// Captures between budget checks.
 const BUDGET_CHECK_EVERY: usize = 4_096;
@@ -36,12 +38,6 @@ const BUDGET_CHECK_EVERY: usize = 4_096;
 /// 1-based line of a node.
 pub(super) fn line(node: Node) -> u32 {
     u32::try_from(node.start_position().row + 1).unwrap_or(u32::MAX)
-}
-
-/// Named children of `node`, at most [`MAX_CHILDREN`].
-pub(super) fn named_children(node: Node) -> impl Iterator<Item = Node> {
-    let count = u32::try_from(node.named_child_count()).unwrap_or(u32::MAX);
-    (0..count.min(MAX_CHILDREN)).filter_map(move |i| node.named_child(i))
 }
 
 /// Last segment of a dotted name, without a call suffix.
@@ -110,10 +106,12 @@ pub(super) struct Core<'t> {
     pub not_values: HashSet<usize>,
     pub calls: Vec<Call<'t>>,
     pub binds: Vec<Bind>,
-    /// Imported or required names and what they stand for.
-    pub aliases: HashMap<String, String>,
-    /// Variables holding a network client, and the constructor call.
-    pub objects: HashMap<String, String>,
+    /// Imported or required names and everything they may stand for. Every
+    /// binding is kept, so a later (possibly dead) rebinding cannot hide an
+    /// earlier one.
+    aliases: HashMap<String, Vec<String>>,
+    /// Variables holding a network client, and the constructor calls.
+    objects: HashMap<String, Vec<String>>,
     pub sources: Vec<Site>,
     pub sensitive: Vec<String>,
     next_id: usize,
@@ -154,6 +152,117 @@ impl<'t> Core<'t> {
         self.truncated.set(true);
     }
 
+    /// Spends one unit of the scan budget; false (and truncated) when it is
+    /// used up.
+    fn spend(&self) -> bool {
+        let left = self.scan_left.get();
+        if left == 0 {
+            self.truncate();
+            return false;
+        }
+        self.scan_left.set(left - 1);
+        true
+    }
+
+    /// Named children of `node` other than comments, at most
+    /// [`MAX_CHILDREN`]. Comments do not count toward the cap; hitting the cap
+    /// marks the facts truncated.
+    pub fn children<'n>(&self, node: Node<'n>) -> Vec<Node<'n>> {
+        let mut out = Vec::new();
+        let mut cursor = node.walk();
+        for c in node.named_children(&mut cursor) {
+            if !self.spend() {
+                break;
+            }
+            if c.kind() == "comment" {
+                continue;
+            }
+            if out.len() == MAX_CHILDREN as usize {
+                self.truncate();
+                break;
+            }
+            out.push(c);
+        }
+        out
+    }
+
+    /// First named child of `node` that is not a comment.
+    pub fn first_child<'n>(&self, node: Node<'n>) -> Option<Node<'n>> {
+        let mut cursor = node.walk();
+        for c in node.named_children(&mut cursor) {
+            if !self.spend() {
+                return None;
+            }
+            if c.kind() != "comment" {
+                return Some(c);
+            }
+        }
+        None
+    }
+
+    /// Whether `node` has a named child of `kind` (no cap on the search).
+    pub fn has_child_kind(&self, node: Node, kind: &str) -> bool {
+        let mut cursor = node.walk();
+        for c in node.named_children(&mut cursor) {
+            if !self.spend() {
+                return false;
+            }
+            if c.kind() == kind {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Records that `local` may stand for `full`.
+    pub fn add_alias(&mut self, local: &str, full: String) {
+        if local == full {
+            return;
+        }
+        let entry = self.aliases.entry(local.to_string()).or_default();
+        if entry.contains(&full) {
+            return;
+        }
+        if entry.len() >= MAX_RESOLUTIONS {
+            self.truncated.set(true);
+            return;
+        }
+        entry.push(full);
+    }
+
+    /// Every name `name` may stand for once an imported alias or a network
+    /// object variable at its head is replaced; `name` itself when neither
+    /// applies.
+    pub fn resolutions(&self, name: &str) -> Vec<String> {
+        let cut = name.find(['.', '(']).unwrap_or(name.len());
+        let (head, rest) = name.split_at(cut);
+        let mut out: Vec<String> = Vec::new();
+        if let Some(fulls) = self.aliases.get(head) {
+            out.extend(fulls.iter().map(|f| format!("{f}{rest}")));
+        }
+        if rest.starts_with('.')
+            && let Some(objs) = self.objects.get(head)
+        {
+            out.extend(objs.iter().map(|o| format!("{o}{rest}")));
+        }
+        if out.is_empty() {
+            out.push(name.to_string());
+        }
+        out
+    }
+
+    /// The first resolution of `name` that `pred` accepts.
+    pub fn resolve_where(&self, name: &str, pred: impl Fn(&str) -> bool) -> Option<String> {
+        self.resolutions(name).into_iter().find(|r| pred(r))
+    }
+
+    /// The first resolution of `name` that `pred` accepts, else the first.
+    pub fn resolve_best(&self, name: &str, pred: impl Fn(&str) -> bool) -> String {
+        let all = self.resolutions(name);
+        let pick = all.iter().position(|r| pred(r)).unwrap_or(0);
+        all.into_iter().nth(pick).unwrap_or_default()
+    }
+
     /// A new site id. Site ids start with `#` and are never identifiers in
     /// any supported language (languages that allow `#` in names, such as
     /// JavaScript private fields, rewrite those names first).
@@ -181,22 +290,6 @@ impl<'t> Core<'t> {
             callee,
             args,
         });
-    }
-
-    /// Replaces an imported alias or a network object variable at the head
-    /// of `name` with what it stands for.
-    pub fn resolve(&self, name: &str) -> String {
-        let cut = name.find(['.', '(']).unwrap_or(name.len());
-        let (head, rest) = name.split_at(cut);
-        if let Some(full) = self.aliases.get(head) {
-            return format!("{full}{rest}");
-        }
-        if rest.starts_with('.')
-            && let Some(obj) = self.objects.get(head)
-        {
-            return format!("{obj}{rest}");
-        }
-        name.to_string()
     }
 
     /// Records `targets = <rhs range>`; `end` overrides the range end.
@@ -343,23 +436,35 @@ impl<'t> Core<'t> {
     }
 
     /// Network client objects: a single-target binding whose right side calls
-    /// one of `constructors` (after alias resolution). Then resolves every
-    /// call name.
-    pub fn resolve_calls(&mut self, constructors: &[&str]) {
-        let mut objects = HashMap::new();
+    /// one of `constructors` (under any alias resolution). Then resolves every
+    /// call name, preferring a resolution that `relevant` accepts (a sink or
+    /// another name the language classifies).
+    pub fn resolve_calls(&mut self, constructors: &[&str], relevant: impl Fn(&str) -> bool) {
+        let mut objects: HashMap<String, Vec<String>> = HashMap::new();
         for b in &self.binds {
             let ([target], Some(callee)) = (b.targets.as_slice(), b.rhs_callee.as_deref()) else {
                 continue;
             };
-            let full = self.resolve(callee);
-            if constructors.contains(&full.as_str()) {
-                objects.insert(target.clone(), format!("{full}()"));
+            for full in self.resolutions(callee) {
+                if !constructors.contains(&full.as_str()) {
+                    continue;
+                }
+                let entry = objects.entry(target.clone()).or_default();
+                let obj = format!("{full}()");
+                if entry.contains(&obj) {
+                    continue;
+                }
+                if entry.len() >= MAX_RESOLUTIONS {
+                    self.truncated.set(true);
+                } else {
+                    entry.push(obj);
+                }
             }
         }
         self.objects = objects;
         let mut calls = std::mem::take(&mut self.calls);
         for c in &mut calls {
-            c.callee = c.callee.take().map(|n| self.resolve(&n));
+            c.callee = c.callee.take().map(|n| self.resolve_best(&n, &relevant));
         }
         self.calls = calls;
     }

