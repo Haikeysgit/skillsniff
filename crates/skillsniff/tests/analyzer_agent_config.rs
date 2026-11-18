@@ -349,3 +349,61 @@ fn copy_destination_must_be_the_guarded_path() {
     expect_none(&[("a.sh", "cp ~/.bashrc ./backup\n")]);
     expect(&[("a.sh", "cp ./mine ~/.bashrc\n")], "shell_profile");
 }
+
+#[test]
+fn trailing_comment_does_not_hide_the_write() {
+    expect(&[("a.sh", "cp a ~/.bashrc # backup\n")], "shell_profile");
+    expect(
+        &[("a.ps1", "Copy-Item a $PROFILE # keep\n")],
+        "shell_profile",
+    );
+    expect_none(&[("a.sh", "cp ~/.bashrc b # backup\n")]);
+}
+
+#[test]
+fn git_config_read_in_prose_is_not_a_write() {
+    expect_none_with_skill(&md("Run git config core.hooksPath to see hooks"));
+    let sigs = run_files(&[("SKILL.md", &md("Run git config core.hooksPath ./evil"))]);
+    assert!(targets(&sigs).contains(&"git_hooks"), "{sigs:?}");
+}
+
+#[test]
+fn one_line_with_a_hundred_thousand_hits_is_bounded() {
+    let line = "~/.bashrc ".repeat(100_000);
+    let start = std::time::Instant::now();
+    let sigs = run_files(&[("a.sh", &format!("{line}\n"))]);
+    assert!(start.elapsed().as_secs() < 5, "{:?}", start.elapsed());
+    assert!(
+        sigs.iter().any(|s| s.kind == "Hidden"
+            && s.fields.get("pattern").map(String::as_str) == Some("parse_budget_exceeded")),
+        "{sigs:?}"
+    );
+}
+
+#[test]
+fn many_hits_without_spaces_and_dense_lines_are_bounded() {
+    let line = "~/.bashrc".repeat(200_000);
+    let many = "echo a >> ~/.zshrc\n".repeat(50_000);
+    let start = std::time::Instant::now();
+    run_files(&[("a.sh", &format!("{line}\n{many}"))]);
+    assert!(start.elapsed().as_secs() < 10, "{:?}", start.elapsed());
+}
+
+#[test]
+fn files_past_the_deadline_are_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("SKILL.md"), SKILL_MD).unwrap();
+    fs::write(dir.path().join("a.sh"), "echo x >> ~/.bashrc\n").unwrap();
+    let inv = build_inventory(dir.path()).unwrap();
+    let skill = detect_skill(&inv, dir.path()).unwrap();
+    let roles = skill.classify(&inv);
+    let ctx = ScanContext {
+        root: dir.path().to_path_buf(),
+        inventory: inv,
+        roles,
+        skill,
+    };
+    let out = AgentConfigAnalyzer.run_with_deadline(&ctx, std::time::Duration::ZERO);
+    assert_eq!(out.signals.len(), 2);
+    assert!(out.signals.iter().all(|s| s.kind == "Hidden"));
+}

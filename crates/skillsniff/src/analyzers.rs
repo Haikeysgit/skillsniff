@@ -227,3 +227,10 @@ pub(crate) fn budget_signal(file: &str, secs: u64) -> Signal {
         evidence: format!("analysis stopped after {secs}s; file only partly checked"),
     }
 }
+
+/// Signal for a file only partly checked, with the reason as evidence.
+pub(crate) fn partial_signal(file: &str, why: &str) -> Signal {
+    let mut s = budget_signal(file, 0);
+    s.evidence = why.to_string();
+    s
+}

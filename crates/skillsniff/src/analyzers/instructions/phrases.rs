@@ -6,6 +6,7 @@
 //!
 //! - `(a|b|)` is a choice; an empty alternative makes the group optional.
 //! - `{N}` skips up to N characters.
+//! - a trailing `$w` requires a word boundary after the match.
 //! - `\x` is a literal `x`, used for `(`, `)`, `{`, `}` and `\`.
 //!
 //! Verbs carry a trailing space so they match whole words only.
@@ -18,7 +19,7 @@ pub const PROMPT_INJECTION: &[&str] = &[
     "disregard (your |all |any |the |)(safety|ethical|security) (guidelines|rules|training|restrictions|instructions)",
     "forget (all |everything |any |your |)(of |)(previous|prior|earlier|above|preceding) (instructions|rules|prompts|context|directions)",
     "forget everything (above|before this|you were told|you have been told)",
-    "you are now (a |an |)(unrestricted|unfiltered|jailbroken|uncensored|dan)",
+    "you are now (a |an |)(unrestricted|unfiltered|jailbroken|uncensored|dan)$w",
     "you are now (in developer mode|in dev mode|free of|free from|no longer bound|without restrictions|without any restrictions)",
     "you are now{40}(no rules|no restrictions|no limits|without rules|without restrictions|without limits|without any rules|without any restrictions)",
     "you are no longer (bound|restricted|limited|constrained|subject to)",
@@ -40,6 +41,7 @@ pub const PERMISSION_BYPASS: &[&str] = &[
     "disable (the |all |any |)(permission|approval|confirmation)(s|) (prompt|check|dialog)",
     "bypass (the |all |any |)(permission|approval|confirmation|sandbox|safety)",
     "auto(-| |)approv(e|es|ed|ing) (all|any|every|everything|anything)",
+    "auto(_|-|)approve(\"|'|)( |)(:|=)( |)(true|yes|[\"*\"]|['*']|\"*\"|'*')",
     r"bash\(*\)",
     "(do not|don't|never|no need to) ask (the user|for confirmation|for permission|for approval){40}( run| execut| install| delet| any | every | all )",
     "without (asking|prompting) (the user|for confirmation|for permission|for approval){40}( run| execut| install| delet| any | every | all )",

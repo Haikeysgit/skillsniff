@@ -109,6 +109,8 @@ fn compile(spec: &str) -> Vec<Elem> {
 
 fn rules_for(pattern: &'static str, specs: &[&str], end_boundary: bool, out: &mut Vec<Rule>) {
     for s in specs {
+        let (s, word_end) = s.strip_suffix("$w").map_or((*s, false), |p| (p, true));
+        let end_boundary = end_boundary || word_end;
         let elems = compile(s);
         let mut firsts = [false; 128];
         if let Some(Elem::Alt(alts)) = elems.first() {

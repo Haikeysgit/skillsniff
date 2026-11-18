@@ -9,13 +9,14 @@
 //!   does not count: the line must hold a write (redirect, copy, move, tee,
 //!   `Set-Content`, `open(.., "w")`, `writeFile`, or a verb such as "append").
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
 use crate::analyzers::{
-    Analyzer, AnalyzerOutput, ScanContext, is_invisible, read_lossy, safe_evidence,
-    unreadable_signal,
+    Analyzer, AnalyzerOutput, ScanContext, budget_signal, is_invisible, partial_signal, read_lossy,
+    safe_evidence, unreadable_signal,
 };
 use crate::inventory::ContentType;
 use crate::model::signal::AGENT_CONFIG;
@@ -275,8 +276,21 @@ fn has_strong_prose_verb(line: &str) -> bool {
         .any(|at| !negated(line, at))
 }
 
-/// Whether the text after an `open(` call opens a file for writing.
+/// Wall-clock budget for the whole analyzer, below the runner timeout.
+pub const ANALYZER_DEADLINE: Duration = Duration::from_secs(20);
+/// Guarded-path matches examined per line; the rest are reported as unchecked.
+const MAX_HITS_PER_LINE: usize = 1000;
+/// Bytes looked at on either side of a path when reading its command.
+const LOCAL_WINDOW: usize = 256;
+
+/// Whether the text after an `open(` call opens a file for writing. Only the
+/// next few hundred characters are read; a mode argument sits right there.
 fn open_mode_writes(rest: &str) -> bool {
+    let cut = rest
+        .char_indices()
+        .nth(LOCAL_WINDOW)
+        .map_or(rest.len(), |(i, _)| i);
+    let rest = &rest[..cut];
     rest.match_indices(['"', '\'']).any(|(i, q)| {
         let before = rest[..i].trim_end();
         let mode = &rest[i + 1..];
@@ -286,22 +300,93 @@ fn open_mode_writes(rest: &str) -> bool {
     })
 }
 
-/// The path at `at` sits inside an `open(.., "w"|"a")` call.
-fn inside_open_write(line: &str, at: usize) -> bool {
-    find_all(line, "open(")
+/// Facts about one line, computed once so every hit on it is a lookup.
+struct LineIdx {
+    /// Offsets of `| ; & ` (` that start a new command.
+    seps: Vec<usize>,
+    /// Offsets that end a command's arguments: separators, redirects, `)`
+    /// and an unquoted `#` comment.
+    terms: Vec<usize>,
+    /// Offsets of `=`.
+    eqs: Vec<usize>,
+    /// First write-call word (writeFile, shutil.copy, ...).
+    first_call: Option<usize>,
+    /// A `write_text`/`write_bytes` method call is on the line.
+    has_method: bool,
+    /// First `open(` call with a write mode.
+    open_write: Option<usize>,
+}
+
+fn comment_start(line: &str) -> Option<usize> {
+    let mut quote: Option<char> = None;
+    let mut prev_space = true;
+    for (i, c) in line.char_indices() {
+        match (quote, c) {
+            (None, '\'' | '"') => quote = Some(c),
+            (Some(q), _) if q == c => quote = None,
+            (None, '#') if prev_space => return Some(i),
+            _ => {}
+        }
+        prev_space = c.is_whitespace();
+    }
+    None
+}
+
+fn index_line(line: &str) -> LineIdx {
+    let mut seps = Vec::new();
+    let mut terms = Vec::new();
+    let mut eqs = Vec::new();
+    for (i, c) in line.char_indices() {
+        if "|;&`(".contains(c) {
+            seps.push(i);
+        }
+        if "|;&<>`)".contains(c) {
+            terms.push(i);
+        }
+        if c == '=' {
+            eqs.push(i);
+        }
+    }
+    if let Some(c) = comment_start(line) {
+        terms.push(c);
+        terms.sort_unstable();
+    }
+    let first_call = CALL_WORDS
+        .iter()
+        .filter_map(|w| find_all(line, w).first().copied())
+        .min();
+    let open_write = find_all(line, "open(")
         .into_iter()
-        .filter(|&o| o < at)
-        .any(|o| open_mode_writes(&line[o + 5..]))
+        .find(|&o| open_mode_writes(&line[o + 5..]));
+    LineIdx {
+        seps,
+        terms,
+        eqs,
+        first_call,
+        has_method: METHOD_WORDS.iter().any(|w| !find_all(line, w).is_empty()),
+        open_write,
+    }
+}
+
+/// `line[..idx]` limited to the last [`LOCAL_WINDOW`] bytes, and whether it
+/// was cut.
+fn window_before(line: &str, idx: usize) -> (&str, bool) {
+    let mut start = idx.saturating_sub(LOCAL_WINDOW);
+    while !line.is_char_boundary(start) {
+        start += 1;
+    }
+    (&line[start..idx], start > 0)
 }
 
 /// Whether the text just before `idx` is a `>` or `>>` redirect.
 fn redirected(line: &str, idx: usize) -> bool {
-    let b = line[..idx].trim_end_matches(|c: char| !c.is_whitespace() && !"(,>".contains(c));
+    let (w, cut) = window_before(line, idx);
+    let b = w.trim_end_matches(|c: char| !c.is_whitespace() && !"(,>".contains(c));
     let b = b.trim_end();
     if !b.ends_with('>') || b.ends_with("->") || b.ends_with("=>") {
         return false;
     }
-    !b.trim_end_matches('>').trim().is_empty()
+    cut || !b.trim_end_matches('>').trim().is_empty()
 }
 
 fn clean_token(t: &str) -> &str {
@@ -311,34 +396,36 @@ fn clean_token(t: &str) -> &str {
 /// Whether the path at `at` is the target or destination of a write in the
 /// same command: a redirect, the last argument of a copy, a `tee` argument,
 /// the path argument of `Set-Content` and friends, or a path passed to an
-/// open-for-write or write-file call.
-fn is_write_target(line: &str, at: usize) -> bool {
-    if redirected(line, at) || inside_open_write(line, at) {
-        return true;
-    }
-    if CALL_WORDS
-        .iter()
-        .any(|w| !find_all(&line[..at], w).is_empty())
-        || METHOD_WORDS.iter().any(|w| !find_all(line, w).is_empty())
+/// open-for-write or write-file call. Constant work per call.
+fn is_write_target(line: &str, ix: &LineIdx, at: usize) -> bool {
+    if redirected(line, at)
+        || ix.open_write.is_some_and(|o| o < at)
+        || ix.has_method
+        || ix.first_call.is_some_and(|c| c < at)
     {
         return true;
     }
-    let before = &line[..at];
+    let (before, _) = window_before(line, at);
+    let base = at - before.len();
     let tok_start = before
         .char_indices()
         .rev()
         .find(|(_, c)| c.is_whitespace())
-        .map_or(0, |(i, c)| i + c.len_utf8());
-    let seg_start = before[..tok_start]
-        .char_indices()
-        .rev()
-        .find(|(_, c)| "|;&`(".contains(*c))
-        .map_or(0, |(i, c)| i + c.len_utf8());
-    let mut words: Vec<&str> = before[seg_start..tok_start]
-        .split_whitespace()
+        .map_or(base, |(i, c)| base + i + c.len_utf8());
+    let seg_start = match ix.seps.partition_point(|&p| p < tok_start) {
+        0 => 0,
+        k => ix.seps[k - 1] + 1,
+    };
+    let seg = &line[seg_start.max(base)..tok_start];
+    let mut it = seg.split_whitespace();
+    let mut words: Vec<&str> = it
+        .by_ref()
+        .take(12)
         .map(clean_token)
         .filter(|t| !t.is_empty())
         .collect();
+    let long = it.next().is_some();
+    let last_word = seg.split_whitespace().next_back().map_or("", clean_token);
     while words.first().is_some_and(|w| WRAPPERS.contains(w)) {
         words.remove(0);
     }
@@ -347,14 +434,29 @@ fn is_write_target(line: &str, at: usize) -> bool {
     };
     let cmd = first.rsplit('/').next().unwrap_or(first);
     let args = &words[1..];
-    let prev = args.last().copied().unwrap_or("");
+    let prev = if args.is_empty() && !long {
+        ""
+    } else {
+        last_word
+    };
     let end = line[at..]
-        .find(char::is_whitespace)
-        .map_or(line.len(), |i| at + i);
-    let tail = &line[end..];
-    let tail = &tail[..tail
-        .find(['|', ';', '&', '<', '>', '`', ')'])
-        .unwrap_or(tail.len())];
+        .char_indices()
+        .take(LOCAL_WINDOW)
+        .find(|(_, c)| c.is_whitespace())
+        .map_or_else(
+            || {
+                line[at..]
+                    .char_indices()
+                    .nth(LOCAL_WINDOW)
+                    .map_or(line.len(), |(i, _)| at + i)
+            },
+            |(i, _)| at + i,
+        );
+    let stop = match ix.terms.partition_point(|&p| p < end) {
+        k if k < ix.terms.len() => ix.terms[k],
+        _ => line.len(),
+    };
+    let tail = &line[end..stop];
     let last_arg = tail
         .split_whitespace()
         .all(|t| t.starts_with('-') || t.chars().all(|c| c.is_ascii_digit()));
@@ -368,36 +470,38 @@ fn is_write_target(line: &str, at: usize) -> bool {
         return true;
     }
     if FIRST_ARG_CMDS.contains(&cmd) {
-        return PATH_FLAGS.contains(&prev) || args.iter().all(|a| a.starts_with('-'));
+        return PATH_FLAGS.contains(&prev) || (!long && args.iter().all(|a| a.starts_with('-')));
     }
     if OUTPUT_FLAG_CMDS.contains(&cmd) {
         return PATH_FLAGS.contains(&prev);
     }
-    (cmd == "reg" || cmd == "reg.exe") && args == ["add"]
+    (cmd == "reg" || cmd == "reg.exe") && !long && args == ["add"]
 }
 
 /// `git config core.hookspath` writes only when it sets or unsets a value.
-fn git_sets(line: &str, end: usize) -> bool {
-    if ["--unset", "--add", "--replace-all"]
-        .iter()
-        .any(|f| line.contains(f))
-    {
+/// In prose the value must look like a path, so "to see hooks" is not one.
+fn git_sets(line: &str, end: usize, flags: bool, prose: bool) -> bool {
+    if flags {
         return true;
     }
-    line[end..]
-        .split_whitespace()
-        .next()
-        .is_some_and(|t| !t.starts_with(['`', '-', ')', ';', '|', '&', '<', '>']) && !t.is_empty())
+    line[end..].split_whitespace().next().is_some_and(|t| {
+        if t.starts_with(['`', '-', ')', ';', '|', '&', '<', '>']) {
+            return false;
+        }
+        !prose || t.starts_with(['/', '.', '~', '$', '"', '\'']) || t.contains('/')
+    })
 }
 
 /// Name of the variable that `at` is assigned to on this line, if any.
-fn assigned_name(line: &str, at: usize) -> Option<String> {
-    let before = &line[..at];
-    let eq = before.rfind('=')?;
-    if before[..eq].ends_with(['=', '!', '<', '>']) {
+fn assigned_name(line: &str, ix: &LineIdx, at: usize) -> Option<String> {
+    let eq = match ix.eqs.partition_point(|&p| p < at) {
+        0 => return None,
+        k => ix.eqs[k - 1],
+    };
+    if line[..eq].ends_with(['=', '!', '<', '>']) {
         return None;
     }
-    let lhs = before[..eq].trim_end_matches([' ', ':']);
+    let lhs = line[..eq].trim_end_matches([' ', ':']);
     let name: String = lhs
         .chars()
         .rev()
@@ -562,53 +666,85 @@ fn scan_shipped(path: &str, role: FileRole, text: Option<&str>, hits: &mut Hits)
     }
 }
 
+/// How a write scan ended early, if it did.
+#[derive(Default)]
+struct Cut {
+    deadline: bool,
+    too_many_hits: bool,
+}
+
 /// Writes to guarded paths in any text.
 ///
 /// Scripts and config files count only a write whose target is the guarded
-/// path. Prose also counts a clear write verb on the same line.
-fn scan_writes(text: &str, kind: Kind, hits: &mut Hits) {
+/// path. Prose also counts a clear write verb on the same line. Work per line
+/// is linear in its length: per-line facts are computed once and each hit is
+/// a lookup, and at most [`MAX_HITS_PER_LINE`] hits per line are examined.
+fn scan_writes(text: &str, kind: Kind, deadline: Instant, hits: &mut Hits) -> Cut {
     let ctx = if kind == Kind::Prose { "prose" } else { "code" };
+    let mut cut = Cut::default();
     let raw: Vec<&str> = text.split('\n').collect();
     let lines: Vec<String> = raw
         .iter()
         .map(|l| normalize_line(l.strip_suffix('\r').unwrap_or(l)))
         .collect();
-    let mut vars: Vec<(usize, String, &'static str)> = Vec::new();
+    let mut idx: Vec<Option<LineIdx>> = lines.iter().map(|_| None).collect();
+    let mut vars: BTreeSet<(usize, String, &'static str)> = BTreeSet::new();
     for (i, line) in lines.iter().enumerate() {
+        if (i % 64 == 0 || line.len() > 10_000) && Instant::now() > deadline {
+            cut.deadline = true;
+            break;
+        }
         let n = i as u32 + 1;
         let shown = raw[i];
+        let mut found: Vec<(&Spec, &str, usize)> = Vec::new();
         for spec in SPECS {
             if spec.commands.iter().any(|c| !find_all(line, c).is_empty()) {
                 add_ctx(hits, n, spec.target, ctx, shown);
             }
             for p in spec.paths {
                 for a in find_all(line, p) {
-                    let writes = if *p == "core.hookspath" {
-                        git_sets(line, a + p.len())
-                    } else {
-                        is_write_target(line, a)
-                            || (kind == Kind::Prose && has_strong_prose_verb(line))
-                    };
-                    if !writes {
-                        if kind == Kind::Script
-                            && *p != "core.hookspath"
-                            && let Some(name) = assigned_name(line, a)
-                        {
-                            vars.push((i, name, spec.target));
-                        }
-                        continue;
-                    }
-                    add_ctx(hits, n, spec.target, ctx, shown);
-                    if spec.target == "agent_settings" {
-                        for (needle, target) in [
-                            ("hooks", "hooks"),
-                            ("permissions", "permissions"),
-                            ("mcpservers", "mcp_config"),
-                        ] {
-                            if line.contains(&format!("\"{needle}\"")) {
-                                add_ctx(hits, n, target, ctx, shown);
-                            }
-                        }
+                    found.push((spec, p, a));
+                }
+            }
+        }
+        if found.is_empty() {
+            continue;
+        }
+        if found.len() > MAX_HITS_PER_LINE {
+            cut.too_many_hits = true;
+            found.truncate(MAX_HITS_PER_LINE);
+        }
+        let ix = idx[i].insert(index_line(line));
+        let mut prose_verb: Option<bool> = None;
+        let git_flags = ["--unset", "--add", "--replace-all"]
+            .iter()
+            .any(|f| line.contains(f));
+        for (spec, p, a) in found {
+            let writes = if p == "core.hookspath" {
+                git_sets(line, a + p.len(), git_flags, kind == Kind::Prose)
+            } else {
+                is_write_target(line, ix, a)
+                    || (kind == Kind::Prose
+                        && *prose_verb.get_or_insert_with(|| has_strong_prose_verb(line)))
+            };
+            if !writes {
+                if kind == Kind::Script
+                    && p != "core.hookspath"
+                    && let Some(name) = assigned_name(line, ix, a)
+                {
+                    vars.insert((i, name, spec.target));
+                }
+                continue;
+            }
+            add_ctx(hits, n, spec.target, ctx, shown);
+            if spec.target == "agent_settings" {
+                for (needle, target) in [
+                    ("hooks", "hooks"),
+                    ("permissions", "permissions"),
+                    ("mcpservers", "mcp_config"),
+                ] {
+                    if line.contains(&format!("\"{needle}\"")) {
+                        add_ctx(hits, n, target, ctx, shown);
                     }
                 }
             }
@@ -617,15 +753,23 @@ fn scan_writes(text: &str, kind: Kind, hits: &mut Hits) {
     for (i, name, target) in vars {
         let hi = (i + VAR_WINDOW + 1).min(lines.len());
         for j in i..hi {
-            if find_all(&lines[j], &name)
+            let line = &lines[j];
+            let found = find_all(line, &name);
+            if found.is_empty() {
+                continue;
+            }
+            let ix = idx[j].get_or_insert_with(|| index_line(line));
+            if found
                 .into_iter()
-                .any(|a| is_write_target(&lines[j], a))
+                .take(MAX_HITS_PER_LINE)
+                .any(|a| is_write_target(line, ix, a))
             {
                 add_ctx(hits, j as u32 + 1, target, ctx, raw[j]);
                 break;
             }
         }
     }
+    cut
 }
 
 fn signal(target: &str, context: &str, file: &str, line: u32, evidence: String) -> Signal {
@@ -643,15 +787,21 @@ fn signal(target: &str, context: &str, file: &str, line: u32, evidence: String) 
     }
 }
 
-impl Analyzer for AgentConfigAnalyzer {
-    fn id(&self) -> &'static str {
-        "agent_config"
-    }
-
-    fn run(&self, ctx: &ScanContext) -> AnalyzerOutput {
+impl AgentConfigAnalyzer {
+    /// Scans files until `budget` (measured from the call) runs out. Files not
+    /// reached, or only partly checked, each get a `parse_budget_exceeded`
+    /// signal.
+    pub fn run_with_deadline(&self, ctx: &ScanContext, budget: Duration) -> AnalyzerOutput {
+        let deadline = Instant::now() + budget;
+        let secs = budget.as_secs();
         let mut signals = Vec::new();
         for f in &ctx.inventory.files {
+            if Instant::now() >= deadline {
+                signals.push(budget_signal(&f.path, secs));
+                continue;
+            }
             let mut hits = Hits::new();
+            let mut cut = Cut::default();
             let name = f.path.rsplit('/').next().unwrap_or(&f.path);
             if is_suppression_name(&name.to_ascii_lowercase()) {
                 add(&mut hits, 1, "suppression_file", &f.path);
@@ -666,7 +816,7 @@ impl Analyzer for AgentConfigAnalyzer {
                 match read_lossy(ctx, &f.path) {
                     Some(text) => {
                         scan_shipped(&f.path, role, Some(&text), &mut hits);
-                        scan_writes(&text, kind, &mut hits);
+                        cut = scan_writes(&text, kind, deadline, &mut hits);
                     }
                     None => {
                         scan_shipped(&f.path, role, None, &mut hits);
@@ -677,10 +827,29 @@ impl Analyzer for AgentConfigAnalyzer {
             for ((line, target), (context, evidence)) in hits {
                 signals.push(signal(target, context, &f.path, line, evidence));
             }
+            if cut.deadline {
+                signals.push(budget_signal(&f.path, secs));
+            }
+            if cut.too_many_hits {
+                signals.push(partial_signal(
+                    &f.path,
+                    "more than 1000 guarded paths on one line; the rest were not checked",
+                ));
+            }
         }
         AnalyzerOutput {
             signals,
             coverage: Coverage::Ran,
         }
+    }
+}
+
+impl Analyzer for AgentConfigAnalyzer {
+    fn id(&self) -> &'static str {
+        "agent_config"
+    }
+
+    fn run(&self, ctx: &ScanContext) -> AnalyzerOutput {
+        self.run_with_deadline(ctx, ANALYZER_DEADLINE)
     }
 }
