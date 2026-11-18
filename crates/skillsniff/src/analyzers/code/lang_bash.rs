@@ -157,6 +157,10 @@ struct Walk<'t> {
     assigned_all: HashMap<String, Vec<bool>>,
     /// First word of arrays assigned a literal first element: `cmd=(npx ...)`.
     array_first: HashMap<String, String>,
+    /// Whether every write to an array variable so far is `name=(literal ...)`.
+    array_ok: HashMap<String, bool>,
+    /// `name+=(...)` appends to an array variable.
+    appends: HashMap<String, usize>,
     cursor: Option<TreeCursor<'t>>,
 }
 
@@ -177,6 +181,8 @@ impl<'t> Walk<'t> {
             assigned: HashMap::new(),
             assigned_all: HashMap::new(),
             array_first: HashMap::new(),
+            array_ok: HashMap::new(),
+            appends: HashMap::new(),
             cursor: None,
         }
     }
@@ -514,26 +520,53 @@ impl<'t> Walk<'t> {
         let target = self.text(name).to_string();
         let value = node.child_by_field_name("value");
         *self.assigned.entry(target.clone()).or_default() += 1;
-        let mut literal = false;
-        if let Some(v) = value {
-            let text = self.fold(v);
-            literal = !text.contains(['$', UNKNOWN_PIECE, IFS_SEP]);
-            if literal {
-                self.consts.insert(target.clone(), text);
-            }
-            if v.kind() == "array"
-                && let Some(first) = v.named_child(0)
-            {
-                let first = self.fold(first);
-                if !first.contains(['$', UNKNOWN_PIECE, IFS_SEP]) {
-                    self.array_first.insert(target.clone(), first);
+        let indexed = node
+            .child_by_field_name("name")
+            .is_some_and(|n| n.kind() == "subscript");
+        let append = value
+            .is_some_and(|v| self.core.src[node.start_byte()..v.start_byte()].ends_with(b"+="));
+        let is_array = value.is_some_and(|v| v.kind() == "array");
+        if append && is_array && self.array_ok.contains_key(&target) {
+            // Appending items to an array cannot change its first item.
+            *self.appends.entry(target.clone()).or_default() += 1;
+        } else {
+            let mut literal = false;
+            if let Some(v) = value {
+                let text = self.fold(v);
+                let known = !text.contains([UNKNOWN_PIECE, IFS_SEP]) && !append && !indexed;
+                literal = known && !text.contains('$');
+                if known {
+                    self.consts.insert(target.clone(), text);
                 }
+                if is_array {
+                    let all = self
+                        .core
+                        .children(v)
+                        .into_iter()
+                        .all(|e| !self.fold(e).contains(['$', UNKNOWN_PIECE, IFS_SEP]));
+                    literal = all && !append && !indexed;
+                    let first = v.named_child(0).map(|f| self.fold(f));
+                    let ok = !append
+                        && !indexed
+                        && first
+                            .as_ref()
+                            .is_some_and(|f| !f.contains(['$', UNKNOWN_PIECE, IFS_SEP]));
+                    let entry = self.array_ok.entry(target.clone()).or_insert(true);
+                    *entry &= ok;
+                    if let (true, Some(f)) = (ok, first) {
+                        self.array_first.insert(target.clone(), f);
+                    }
+                } else if let Some(entry) = self.array_ok.get_mut(&target) {
+                    *entry = false;
+                }
+            } else if let Some(entry) = self.array_ok.get_mut(&target) {
+                *entry = false;
             }
+            self.assigned_all
+                .entry(target.clone())
+                .or_default()
+                .push(literal);
         }
-        self.assigned_all
-            .entry(target.clone())
-            .or_default()
-            .push(literal);
         if let Some(v) = value {
             // `c=curl`: `$c …` may run curl. Every value is kept.
             let text = self.fold(v);
@@ -1100,6 +1133,15 @@ impl<'t> Walk<'t> {
     ) {
         let texts: Vec<&str> = rest.iter().map(|(_, t)| t.as_str()).collect();
         let any = |f: &dyn Fn(&str) -> bool| texts.iter().any(|t| f(t));
+        if prog == "getopts" {
+            // `getopts spec NAME` writes NAME.
+            if let Some(name) = texts.get(1) {
+                self.assigned_all
+                    .entry((*name).to_string())
+                    .or_default()
+                    .push(false);
+            }
+        }
         match prog {
             "curl" => {
                 cmd.class = Some(NETWORK);
@@ -1663,23 +1705,74 @@ impl<'t> Walk<'t> {
         Some(name.to_string())
     }
 
-    /// `$name` and `${name}` replaced by the text of variables assigned once.
-    fn expand(&self, text: &str) -> String {
-        let mut out = text.to_string();
-        for _ in 0..4 {
-            let mut next = out.clone();
-            for (name, value) in &self.consts {
-                if self.assigned.get(name) == Some(&1) {
-                    next = next
-                        .replace(&format!("${{{name}}}"), value)
-                        .replace(&format!("${name}"), value);
-                }
-            }
-            if next == out {
-                break;
-            }
-            out = next;
+    /// How many writes to `name` the walk has seen: assignments and appends
+    /// we classified, against every bind (`read`, `printf -v`, `mapfile`,
+    /// loops) recorded for it.
+    fn only_known_writes(&self, name: &str) -> bool {
+        let known = self.assigned_all.get(name).map_or(0, Vec::len)
+            + self.appends.get(name).copied().unwrap_or(0);
+        let binds = self
+            .core
+            .binds
+            .iter()
+            .filter(|b| b.targets.iter().any(|t| t == name))
+            .count();
+        known == binds
+    }
+
+    /// The text of a variable written exactly once, with a literal value
+    /// (which may name other such variables, to a bounded depth).
+    fn value_of(&self, name: &str, depth: usize) -> Option<String> {
+        if depth == 0
+            || self.assigned.get(name) != Some(&1)
+            || !self.assigned_all.contains_key(name)
+            || !self.only_known_writes(name)
+        {
+            return None;
         }
+        let raw = self.consts.get(name)?;
+        let out = self.expand_depth(raw, depth - 1);
+        (!out.contains('$')).then_some(out)
+    }
+
+    /// Whether a variable only ever receives `name=(literal ...)` and
+    /// appends, so its first item is a literal.
+    fn array_fixed(&self, name: &str) -> bool {
+        self.array_ok.get(name) == Some(&true)
+            && self.array_first.contains_key(name)
+            && self.only_known_writes(name)
+    }
+
+    /// `$name` and `${name}` replaced by the text of variables written once.
+    fn expand(&self, text: &str) -> String {
+        self.expand_depth(text, 4)
+    }
+
+    fn expand_depth(&self, text: &str, depth: usize) -> String {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(at) = rest.find('$') {
+            out.push_str(&rest[..at]);
+            let after = &rest[at + 1..];
+            let (name, len) = match after.strip_prefix('{') {
+                Some(inner) => match inner.find('}') {
+                    Some(end) => (&inner[..end], end + 2),
+                    None => ("", 0),
+                },
+                None => {
+                    let end = after
+                        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                        .unwrap_or(after.len());
+                    (&after[..end], end)
+                }
+            };
+            match self.value_of(name, depth).filter(|_| len > 0) {
+                Some(v) => out.push_str(&v),
+                None => out.push_str(&rest[at..at + 1 + len]),
+            }
+            rest = &after[len..];
+        }
+        out.push_str(rest);
         out
     }
 
@@ -1696,11 +1789,13 @@ impl<'t> Walk<'t> {
             if let Some(var) = &c.prog_var {
                 // A program held in a variable is fixed when every value it
                 // is given is a literal (or an array starting with one).
-                let fixed = self.array_first.contains_key(var)
-                    || self
+                let fixed = self.array_fixed(var)
+                    || self.value_of(var, 4).is_some()
+                    || (self
                         .assigned_all
                         .get(var)
-                        .is_some_and(|v| !v.is_empty() && v.iter().all(|l| *l));
+                        .is_some_and(|v| !v.is_empty() && v.iter().all(|l| *l))
+                        && self.only_known_writes(var));
                 results.push((false, !fixed));
                 continue;
             }

@@ -965,7 +965,7 @@ impl<'t> Extract<'t> {
             self.fn_names.insert(self.text(name).to_string());
         }
         if name.kind() == "identifier" && value.kind() == "string" {
-            self.consts.insert(self.text(name).to_string(), value);
+            self.consts.insert(self.qualified(name), value);
         }
         for full in self.module_paths(value) {
             self.alias_pattern(name, &full);
@@ -1353,13 +1353,14 @@ impl<'t> Extract<'t> {
     }
 
     /// The string literal a name is declared with, when it is bound once.
-    fn single_const(&self, name: &str) -> Option<Node<'t>> {
-        let c = *self.consts.get(name)?;
+    fn single_const(&self, node: Node<'t>) -> Option<Node<'t>> {
+        let name = self.qualified(node);
+        let c = *self.consts.get(&name)?;
         let n = self
             .core
             .binds
             .iter()
-            .filter(|b| b.targets.iter().any(|t| t == name))
+            .filter(|b| b.targets.contains(&name))
             .count();
         (n == 1).then_some(c)
     }
@@ -1426,8 +1427,8 @@ impl<'t> Extract<'t> {
                     out.push_str(string_content(self.text(n)));
                 }
                 "string_fragment" | "escape_sequence" => out.push_str(self.text(n)),
-                "identifier" if self.single_const(self.text(n)).is_some() => {
-                    stack.extend(self.single_const(self.text(n)));
+                "identifier" if self.single_const(n).is_some() => {
+                    stack.extend(self.single_const(n));
                 }
                 "template_string" => {
                     literal = true;

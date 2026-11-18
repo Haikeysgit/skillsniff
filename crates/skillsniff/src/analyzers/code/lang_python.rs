@@ -183,6 +183,18 @@ struct Extract<'t> {
     /// list joined on with `+`) whose first item is a literal that is not a
     /// shell.
     argv_heads: HashMap<(String, usize), bool>,
+    /// Writes to a name that are not a plain `name = literal`: unpacking,
+    /// `:=`, `for`, `with ... as`, `import ... as`, item and slice
+    /// assignment, and calls such as `insert` or `clear` that can change the
+    /// first item of a list.
+    writes: HashSet<(String, usize)>,
+    /// `+=` on a name and `append`/`extend` calls: they cannot change the
+    /// first item of a list but they do change a string or a shell script.
+    grown: HashSet<(String, usize)>,
+    /// Names of functions that are used as values (`h = run`, `map(run, x)`).
+    escaped: HashSet<String>,
+    /// `globals()[...]`, `locals()` or `vars()` is written to somewhere.
+    scope_dynamic: bool,
 }
 
 impl<'t> Extract<'t> {
@@ -196,6 +208,10 @@ impl<'t> Extract<'t> {
             funcs: Vec::new(),
             consts: HashMap::new(),
             argv_heads: HashMap::new(),
+            writes: HashSet::new(),
+            grown: HashSet::new(),
+            escaped: HashSet::new(),
+            scope_dynamic: false,
         }
     }
 
@@ -284,7 +300,46 @@ impl<'t> Extract<'t> {
     /// First pass. Returns false when the time budget ran out.
     fn collect(&mut self, tree: &'t Tree) -> bool {
         let src = self.core.src;
+        self.find_escaped(tree.root_node());
         run_query(query(), tree, src, |kind, node| self.capture(kind, node))
+    }
+
+    /// Names that appear as a value rather than being called or defined.
+    fn find_escaped(&mut self, root: Node<'t>) {
+        let mut stack = vec![root];
+        let mut steps = 0usize;
+        while let Some(n) = stack.pop() {
+            steps += 1;
+            if steps > 3_000_000 {
+                break;
+            }
+            if n.kind() == "identifier"
+                && let Some(parent) = n.parent()
+            {
+                let is_field =
+                    |field: &str| parent.child_by_field_name(field).map(|f| f.id()) == Some(n.id());
+                let called = parent.kind() == "call" && is_field("function");
+                let defined = matches!(parent.kind(), "function_definition" | "class_definition")
+                    && is_field("name");
+                let keyword = parent.kind() == "keyword_argument" && is_field("name");
+                let member = parent.kind() == "attribute" && is_field("attribute");
+                if !called && !defined && !keyword && !member {
+                    self.escaped.insert(self.text(n).to_string());
+                }
+            }
+            let mut cursor = n.walk();
+            for c in n.named_children(&mut cursor) {
+                stack.push(c);
+            }
+        }
+    }
+
+    /// Notes the names a binding form writes, in the scope around it.
+    fn note_writes(&mut self, node: Node<'t>, names: Vec<String>) {
+        let scope = self.scope_of(node);
+        for name in names {
+            self.writes.insert((name, scope));
+        }
     }
 
     fn capture(&mut self, kind: &str, node: Node<'t>) {
@@ -320,12 +375,44 @@ impl<'t> Extract<'t> {
                     .child_by_field_name("function")
                     .and_then(|f| self.dotted(f, true));
                 let args = node.child_by_field_name("arguments");
+                if let Some((obj, method)) = callee.as_deref().and_then(|c| c.rsplit_once('.'))
+                    && !obj.contains(['.', '('])
+                {
+                    let key = (obj.to_string(), self.scope_of(node));
+                    match method {
+                        "append" | "extend" => {
+                            self.grown.insert(key);
+                        }
+                        "insert" | "clear" | "pop" | "remove" | "sort" | "reverse" | "update"
+                        | "setdefault" | "__setitem__" | "popitem" => {
+                            self.writes.insert(key);
+                        }
+                        _ => {}
+                    }
+                }
                 self.core.add_call(node, callee, args);
             }
             "assign" | "augassign" => {
                 let Some(left) = node.child_by_field_name("left") else {
                     return;
                 };
+                let left_text = self.text(left);
+                if ["globals(", "locals(", "vars("]
+                    .iter()
+                    .any(|f| left_text.starts_with(f))
+                {
+                    self.scope_dynamic = true;
+                }
+                if kind == "augassign" {
+                    let names = self.targets(left);
+                    let scope = self.scope_of(node);
+                    for name in names {
+                        self.grown.insert((name, scope));
+                    }
+                } else if left.kind() != "identifier" {
+                    let names = self.targets(left);
+                    self.note_writes(node, names);
+                }
                 if kind == "assign" && self.bind_pairs(left, node.child_by_field_name("right"), ln)
                 {
                     return;
@@ -359,6 +446,7 @@ impl<'t> Extract<'t> {
                     .child_by_field_name("name")
                     .map(|n| self.targets(n))
                     .unwrap_or_default();
+                self.note_writes(node, targets.clone());
                 self.bind(targets, node.child_by_field_name("value"), None, ln);
             }
             "for" => {
@@ -366,6 +454,7 @@ impl<'t> Extract<'t> {
                     .child_by_field_name("left")
                     .map(|n| self.targets(n))
                     .unwrap_or_default();
+                self.note_writes(node, targets.clone());
                 let end = (node.kind() == "for_in_clause").then(|| node.end_byte());
                 self.bind(targets, node.child_by_field_name("right"), end, ln);
             }
@@ -374,6 +463,7 @@ impl<'t> Extract<'t> {
                     .child_by_field_name("alias")
                     .map(|n| self.targets(n))
                     .unwrap_or_default();
+                self.note_writes(node, targets.clone());
                 let value = self.core.first_child(node);
                 self.bind(targets, value, None, ln);
             }
@@ -392,7 +482,19 @@ impl<'t> Extract<'t> {
                     self.bind(vec![name], Some(node), None, ln);
                 }
             }
-            "import" => self.import(node),
+            "import" => {
+                let mut names = Vec::new();
+                let mut stack = vec![node];
+                while let Some(n) = stack.pop() {
+                    if n.kind() == "identifier" {
+                        names.push(self.text(n).to_string());
+                    }
+                    let mut cursor = n.walk();
+                    stack.extend(n.named_children(&mut cursor));
+                }
+                self.note_writes(node, names);
+                self.import(node)
+            }
             _ => {}
         }
     }
@@ -814,10 +916,17 @@ impl<'t> Extract<'t> {
     /// assignment in the function around `node` (or, failing that, at module
     /// level). `+=` and `.extend` keep the first item.
     fn single_const(&self, node: Node<'t>) -> Option<Node<'t>> {
+        if self.scope_dynamic {
+            return None;
+        }
         let name = self.text(node);
         for scope in [self.scope_of(node), 0] {
-            if let Some((n, lit)) = self.consts.get(&(name.to_string(), scope)) {
-                return if *n == 1 { *lit } else { None };
+            let key = (name.to_string(), scope);
+            if let Some((n, lit)) = self.consts.get(&key) {
+                let lit = (*lit)?;
+                let list = lit.kind() == "list";
+                let grown = self.grown.contains(&key);
+                return (*n == 1 && !self.writes.contains(&key) && (list || !grown)).then_some(lit);
             }
         }
         None
@@ -862,14 +971,19 @@ impl<'t> Extract<'t> {
         if !shell
             && node.kind() == "identifier"
             && !self.is_param(node)
+            && !self.scope_dynamic
             && [self.scope_of(node), 0].iter().find_map(|sc| {
+                let key = (self.text(node).to_string(), *sc);
                 self.argv_heads
-                    .get(&(self.text(node).to_string(), *sc))
+                    .get(&key)
                     .copied()
+                    .map(|ok| ok && !self.writes.contains(&key))
             }) == Some(true)
         {
             return true;
         }
+        let ident_key = (node.kind() == "identifier")
+            .then(|| (self.text(node).to_string(), self.scope_of(node)));
         let mut node = self.resolve(node);
         // `["soffice"] + args`: the program is the first item on the left.
         while node.kind() == "binary_operator"
@@ -897,7 +1011,10 @@ impl<'t> Extract<'t> {
             let flag = items
                 .iter()
                 .any(|n| self.command_text(*n).is_some_and(|t| is_shell_flag(&t)));
-            return !(shell_prog && flag && items.iter().any(|n| !self.is_literal(*n)));
+            let grown = ident_key
+                .as_ref()
+                .is_some_and(|k| self.grown.contains(k) || self.writes.contains(k));
+            return !(shell_prog && flag && (grown || items.iter().any(|n| !self.is_literal(*n))));
         }
         self.is_literal(node) || self.passed_fixed(node, shell, calls, depth)
     }
@@ -925,6 +1042,9 @@ impl<'t> Extract<'t> {
         ) else {
             return false;
         };
+        if self.escaped.contains(fname) || self.scope_dynamic {
+            return false;
+        }
         let names = self.param_names(params);
         let Some(at) = names.iter().position(|p| *p == name) else {
             return false;

@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Check what text is written and why. Remove the write if it is not needed.",
+      "evidence": "open(os.path.join(os.path.expanduser(\"~\"), d, \"skills\", \"x.md\"), \"w\").write(\"x\")",
+      "explain": "The code writes CLAUDE.md, AGENTS.md or a command, agent or skill file. Text placed there is read at the start of every later session, so it steers the agent for good.",
+      "locations": [
+        {
+          "file": "scripts/vp.py",
+          "line": 4
+        }
+      ],
+      "rule": "config.agent-instructions-write",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Writes agent instruction files"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 0,
+    "medium": 1
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "bad167986d17bb8a70dcf05d5c08dc60cbe90a14b94bfc83a762fc5d9325cc6f",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

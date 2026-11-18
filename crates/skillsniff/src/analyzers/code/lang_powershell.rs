@@ -388,6 +388,8 @@ struct Walk<'t> {
     err_sinks: Vec<ErrSink<'t>>,
     /// Text of variables assigned a plain string, by variable key.
     consts: HashMap<String, String>,
+    /// Whether the file writes variables by name, which turns folding off.
+    fold_off: std::cell::OnceCell<bool>,
     next_name: usize,
     cursor: Option<TreeCursor<'t>>,
 }
@@ -406,6 +408,7 @@ impl<'t> Walk<'t> {
             loop_read: false,
             err_sinks: Vec::new(),
             consts: HashMap::new(),
+            fold_off: std::cell::OnceCell::new(),
             next_name: 0,
             cursor: None,
         }
@@ -1350,6 +1353,30 @@ impl<'t> Walk<'t> {
 
     /// `$name` pieces replaced by the text of variables assigned once.
     fn expand_vars(&self, text: &str) -> String {
+        // Forms that write a variable by name: folding is off for the file.
+        const WRITERS: &[&str] = &[
+            "set-variable",
+            "new-variable",
+            "-outvariable",
+            "-errorvariable",
+            "-warningvariable",
+            "-pipelinevariable",
+            "-variable ",
+            "[ref]",
+            "$executioncontext",
+            "set-item ",
+            "set-content variable:",
+        ];
+        let off = *self.fold_off.get_or_init(|| {
+            let src = String::from_utf8_lossy(self.core.src).to_ascii_lowercase();
+            WRITERS.iter().any(|w| src.contains(w))
+                || src
+                    .split_whitespace()
+                    .any(|w| matches!(w, "sv" | "nv" | "-ov" | "-ev"))
+        });
+        if off {
+            return text.to_string();
+        }
         let mut out = String::new();
         let mut rest = text;
         while let Some(at) = rest.find('$') {
