@@ -4,7 +4,7 @@ use skillsniff::model::{Coverage, Finding, Report, Severity, Summary, Verdict};
 
 use super::progress::{DISPLAY_ORDER, analyzer_name};
 use super::{
-    AMBER, Color, GREEN, GREY, Glyphs, ORANGE, OutputMode, RED, Style, clean, pad, paint, width_of,
+    AMBER, Color, GREEN, GREY, Glyphs, OutputMode, RED, Style, WHITE, clean, pad, paint, width_of,
 };
 
 /// Findings listed under the card; the rest are counted.
@@ -33,19 +33,19 @@ pub(crate) fn verdict_color(v: Verdict) -> Color {
 
 fn severity_style(s: Severity) -> Style {
     match s {
-        Severity::Critical => Style::fg(RED).bold(),
-        Severity::High => Style::fg(ORANGE),
+        Severity::Critical => Style::fg(WHITE).bold().on(RED),
+        Severity::High => Style::fg(RED),
         Severity::Medium => Style::fg(AMBER),
         Severity::Low => Style::fg(GREY),
     }
 }
 
-fn severity_word(s: Severity) -> &'static str {
+fn severity_label(s: Severity) -> &'static str {
     match s {
-        Severity::Critical => "critical",
-        Severity::High => "high",
-        Severity::Medium => "medium",
-        Severity::Low => "low",
+        Severity::Critical => "CRITICAL",
+        Severity::High => "HIGH",
+        Severity::Medium => "MEDIUM",
+        Severity::Low => "LOW",
     }
 }
 
@@ -176,7 +176,7 @@ fn finding_lines(f: &Finding, mode: &OutputMode, g: &Glyphs) -> [String; 2] {
         format!(
             "{INDENT}{}  {}",
             pad(
-                &paint(c, severity_word(f.severity), severity_style(f.severity)),
+                &paint(c, severity_label(f.severity), severity_style(f.severity)),
                 SEVERITY_COL
             ),
             title

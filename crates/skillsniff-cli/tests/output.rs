@@ -6,7 +6,7 @@ use skillsniff::model::Report;
 use skillsniff::progress::NoopProgress;
 use skillsniff::scan::{ScanOptions, scan};
 use skillsniff_cli::output::{
-    ColorDepth, OutputMode, detect_from, render_banner, render_json, render_report,
+    ColorDepth, OutputMode, detect_from, render_banner, render_json, render_report, render_welcome,
 };
 
 fn fixture(rel: &str) -> PathBuf {
@@ -120,7 +120,7 @@ fn narrow_terminal_uses_one_line_banner() {
 }
 
 #[test]
-fn banner_gradient_runs_from_light_to_dark_teal() {
+fn banner_is_chrome_with_shadow() {
     let mode = OutputMode {
         color: ColorDepth::TrueColor,
         decorate: true,
@@ -128,18 +128,53 @@ fn banner_gradient_runs_from_light_to_dark_teal() {
     };
     let banner = render_banner(&mode);
     assert!(
-        banner.contains("\u{1b}[38;2;60;201;189m"),
-        "starts at #3CC9BD"
+        banner.starts_with("\u{1b}[38;2;110;255;236m█"),
+        "first block starts at the light stop"
     );
     assert!(
-        banner.contains("\u{1b}[38;2;11;110;105m"),
-        "ends at #0B6E69"
+        banner.contains("\u{1b}[38;2;30;94;90m╗"),
+        "box drawing is the shadow"
     );
+    assert!(!banner.contains("\u{1b}[38;2;30;94;90m█"));
+    assert_eq!(
+        console::strip_ansi_codes(&banner),
+        render_banner(&plain(100))
+    );
+
     let ansi16 = render_banner(&OutputMode {
         color: ColorDepth::Ansi16,
         ..mode
     });
-    assert!(ansi16.contains("\u{1b}[36m"));
+    assert!(ansi16.contains("\u{1b}[96m█"));
+    assert!(ansi16.contains("\u{1b}[36m║"));
+}
+
+#[test]
+fn welcome_box_lines_share_one_width() {
+    for mode in [
+        OutputMode {
+            color: ColorDepth::TrueColor,
+            decorate: true,
+            ..plain(100)
+        },
+        plain(100),
+        OutputMode {
+            utf8: false,
+            ..plain(100)
+        },
+    ] {
+        let out = console::strip_ansi_codes(&render_welcome(&mode)).into_owned();
+        let box_lines: Vec<&str> = out
+            .lines()
+            .filter(|l| l.starts_with(['╭', '│', '╰', '+', '|']))
+            .collect();
+        assert_eq!(box_lines.len(), 6, "{out}");
+        let w = console::measure_text_width(box_lines[0]);
+        for l in &box_lines {
+            assert_eq!(console::measure_text_width(l), w, "{l}");
+        }
+        assert!(out.contains("Tips: scan a GitHub skill"));
+    }
 }
 
 #[test]

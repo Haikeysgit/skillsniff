@@ -18,8 +18,8 @@ use skillsniff::scan::{ScanError, ScanOptions, scan};
 use skillsniff::target::TargetError;
 
 use crate::output::{
-    ConsoleGuard, GREY, OutputMode, Style, TEAL, TerminalProgress, detect, paint, render_banner,
-    render_json, render_report,
+    ConsoleGuard, OutputMode, TerminalProgress, detect, render_banner, render_json, render_report,
+    render_welcome,
 };
 
 pub const EXIT_USAGE: i32 = 3;
@@ -147,35 +147,7 @@ fn error(msg: &str) {
 fn welcome() -> i32 {
     let mode = detect(false, false);
     let _guard = ConsoleGuard::prepare(mode.decorate);
-    let c = mode.color;
-    let mut out = String::new();
-    if mode.decorate {
-        out.push_str(&render_banner(&mode));
-    } else {
-        out.push_str(&render_banner(&OutputMode { width: 0, ..mode }));
-    }
-    out.push('\n');
-    out.push_str(" Inspects AI agent skills for red flags before you install them, without running them.\n\n");
-    for example in [
-        "skillsniff scan github.com/owner/repo",
-        "skillsniff scan ./my-skill",
-        "skillsniff scan skill.zip --json",
-    ] {
-        out.push_str(&format!(
-            "   {} {}\n",
-            paint(c, "$", Style::fg(GREY)),
-            paint(c, example, Style::fg(TEAL))
-        ));
-    }
-    out.push_str(&format!(
-        "\n {}\n",
-        paint(
-            c,
-            "Run skillsniff --help for every option.",
-            Style::fg(GREY)
-        )
-    ));
-    print!("{out}");
+    print!("{}", render_welcome(&mode));
     0
 }
 

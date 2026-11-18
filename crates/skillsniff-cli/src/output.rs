@@ -13,7 +13,7 @@ mod console_guard;
 mod progress;
 mod terminal;
 
-pub use banner::render_banner;
+pub use banner::{render_banner, render_welcome};
 pub use console_guard::ConsoleGuard;
 pub use progress::{TerminalProgress, analyzer_name};
 pub use terminal::{render_json, render_report};
@@ -41,6 +41,8 @@ pub struct OutputMode {
 
 /// Width assumed when the terminal size is unknown.
 const DEFAULT_WIDTH: u16 = 80;
+/// Width used when colour is forced without a terminal.
+const FORCED_WIDTH: u16 = 100;
 
 /// Detects the output mode from stdout and the environment.
 pub fn detect(json: bool, quiet: bool) -> OutputMode {
@@ -58,8 +60,11 @@ pub fn detect_from(
     width: Option<u16>,
 ) -> OutputMode {
     let set = |k: &str| env(k).is_some_and(|v| !v.is_empty());
-    let decorate = !json && !quiet && stdout_tty && !set("CI") && !set("NO_COLOR");
-    let color = if !decorate || env("TERM").as_deref() == Some("dumb") {
+    let forced = !json && env("SKILLSNIFF_FORCE_COLOR").as_deref() == Some("truecolor");
+    let decorate = forced || (!json && !quiet && stdout_tty && !set("CI") && !set("NO_COLOR"));
+    let color = if forced {
+        ColorDepth::TrueColor
+    } else if !decorate || env("TERM").as_deref() == Some("dumb") {
         ColorDepth::None
     } else if truecolor(env) {
         ColorDepth::TrueColor
@@ -70,8 +75,12 @@ pub fn detect_from(
         json,
         decorate,
         color,
-        width: width.filter(|w| *w > 0).unwrap_or(DEFAULT_WIDTH),
-        utf8: utf8_output(env),
+        width: width.filter(|w| *w > 0).unwrap_or(if forced {
+            FORCED_WIDTH
+        } else {
+            DEFAULT_WIDTH
+        }),
+        utf8: forced || utf8_output(env),
     }
 }
 
@@ -106,9 +115,9 @@ pub(crate) const TEAL: Color = Color {
     rgb: (0x3C, 0xC9, 0xBD),
     ansi: 36,
 };
-pub(crate) const TEAL_DARK: Color = Color {
-    rgb: (0x0B, 0x6E, 0x69),
-    ansi: 36,
+pub(crate) const WHITE: Color = Color {
+    rgb: (0xFF, 0xFF, 0xFF),
+    ansi: 97,
 };
 pub(crate) const GREEN: Color = Color {
     rgb: (0x3F, 0xB9, 0x50),
@@ -122,10 +131,6 @@ pub(crate) const RED: Color = Color {
     rgb: (0xF8, 0x51, 0x49),
     ansi: 31,
 };
-pub(crate) const ORANGE: Color = Color {
-    rgb: (0xF0, 0x88, 0x3E),
-    ansi: 31,
-};
 pub(crate) const GREY: Color = Color {
     rgb: (0x8B, 0x94, 0x9E),
     ansi: 90,
@@ -135,6 +140,7 @@ pub(crate) const GREY: Color = Color {
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct Style {
     pub fg: Option<Color>,
+    pub bg: Option<Color>,
     pub bold: bool,
 }
 
@@ -142,7 +148,14 @@ impl Style {
     pub fn fg(c: Color) -> Style {
         Style {
             fg: Some(c),
-            bold: false,
+            ..Style::default()
+        }
+    }
+
+    pub fn on(self, c: Color) -> Style {
+        Style {
+            bg: Some(c),
+            ..self
         }
     }
 
@@ -153,7 +166,10 @@ impl Style {
 
 /// Wraps `text` in SGR codes for `depth`; plain text when there is no colour.
 pub(crate) fn paint(depth: ColorDepth, text: &str, style: Style) -> String {
-    if text.is_empty() || depth == ColorDepth::None || (style.fg.is_none() && !style.bold) {
+    if text.is_empty()
+        || depth == ColorDepth::None
+        || (style.fg.is_none() && style.bg.is_none() && !style.bold)
+    {
         return text.to_string();
     }
     let mut codes = Vec::new();
@@ -164,6 +180,12 @@ pub(crate) fn paint(depth: ColorDepth, text: &str, style: Style) -> String {
         codes.push(match depth {
             ColorDepth::TrueColor => format!("38;2;{};{};{}", c.rgb.0, c.rgb.1, c.rgb.2),
             _ => c.ansi.to_string(),
+        });
+    }
+    if let Some(c) = style.bg {
+        codes.push(match depth {
+            ColorDepth::TrueColor => format!("48;2;{};{};{}", c.rgb.0, c.rgb.1, c.rgb.2),
+            _ => (c.ansi + 10).to_string(),
         });
     }
     format!("\u{1b}[{}m{text}\u{1b}[0m", codes.join(";"))

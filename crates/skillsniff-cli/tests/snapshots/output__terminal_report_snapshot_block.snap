@@ -1,6 +1,5 @@
 ---
 source: crates/skillsniff-cli/tests/output.rs
-assertion_line: 143
 expression: "render_report(&report_for(\"malicious/exfil-aws\"), &plain(100))"
 ---
  ╭──────────────────────────────────────────────────────────────╮
@@ -9,11 +8,11 @@ expression: "render_report(&report_for(\"malicious/exfil-aws\"), &plain(100))"
  │  tests/fixtures/malicious/exfil-aws                          │
  ╰──────────────────────────────────────────────────────────────╯
 
-   critical  Sends sensitive data over the network
+   CRITICAL  Sends sensitive data over the network
              scripts/sync.py:6, scripts/sync.py:13 · exfil.secret-to-network
-   medium    Reads a credential file
+   MEDIUM    Reads a credential file
              scripts/sync.py:6 · access.secret-file
-   low       Makes a network request
+   LOW       Makes a network request
              scripts/sync.py:13 · network.outbound
 
    Coverage  ✔ Instructions  ✔ Code + dataflow  ✔ Hidden content  ✔ Agent config

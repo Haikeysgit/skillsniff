@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
+use indicatif::{ProgressBar, ProgressDrawTarget, ProgressStyle};
 use skillsniff::model::signal::{AGENT_CONFIG, HIDDEN, INSTRUCTION, SINK, SOURCE, TAINT_FLOW};
 use skillsniff::model::{Coverage, Report, Summary};
 use skillsniff::progress::{ProgressEvent, ProgressSink};
@@ -12,7 +12,7 @@ use skillsniff::rules::builtin;
 
 use super::terminal::{counts_text, pinned};
 use super::{
-    ColorDepth, GREEN, GREY, Glyphs, OutputMode, RED, Style, TEAL, clean, pad, paint, width_of,
+    AMBER, ColorDepth, GREEN, GREY, Glyphs, OutputMode, RED, Style, TEAL, clean, pad, paint,
 };
 
 /// Analyzer ids in the order they are shown.
@@ -27,8 +27,8 @@ const CODE_HIDDEN_RULES: &[&str] = &[
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const TICK: Duration = Duration::from_millis(80);
-/// Narrowest label column, so results line up in one column.
-const LABEL_MIN: usize = 44;
+/// Width of the name column, so results line up.
+const NAME_COL: usize = 18;
 
 /// Human name of an analyzer id.
 pub fn analyzer_name(id: &str) -> &str {
@@ -74,44 +74,66 @@ fn per_analyzer(report: &Report) -> HashMap<&'static str, Summary> {
     out
 }
 
-struct Line {
-    id: &'static str,
-    bar: ProgressBar,
-}
-
 struct Inner {
-    multi: MultiProgress,
     color: ColorDepth,
     glyphs: Glyphs,
     source: String,
-    fetch: ProgressBar,
-    lines: Mutex<Vec<Line>>,
+    spinner: ProgressBar,
+    state: Mutex<State>,
 }
 
-/// Spinner lines for fetching and each analyzer; does nothing when output
-/// is not decorated.
+#[derive(Default)]
+struct State {
+    /// Analyzers that have started, in display order.
+    started: Vec<&'static str>,
+    done: usize,
+}
+
+/// A spinner while the scan runs, then one line per finished stage; does
+/// nothing when output is not decorated.
 pub struct TerminalProgress {
     inner: Option<Inner>,
 }
 
+/// Colour of an analyzer's result by its worst finding.
+fn result_style(s: &Summary) -> Style {
+    if s.critical > 0 || s.high > 0 {
+        Style::fg(RED)
+    } else if s.medium > 0 {
+        Style::fg(AMBER)
+    } else {
+        Style::fg(GREY)
+    }
+}
+
 impl TerminalProgress {
-    /// Starts the "Fetching" line for `source` when decorating.
+    /// Starts the "Fetching" spinner for `source` when decorating.
     pub fn new(mode: &OutputMode, source: &str) -> TerminalProgress {
         if !mode.decorate {
             return TerminalProgress::disabled();
         }
-        let multi = MultiProgress::with_draw_target(ProgressDrawTarget::stderr());
-        let inner = Inner {
-            color: mode.color,
-            glyphs: Glyphs::for_mode(mode),
-            source: clean(source),
-            fetch: ProgressBar::hidden(),
-            lines: Mutex::new(Vec::new()),
-            multi,
-        };
-        let fetch = inner.spinner(&format!("Fetching {}", inner.source));
+        let color = mode.color;
+        let ticks: Vec<String> = SPINNER
+            .iter()
+            .map(|t| paint(color, t, Style::fg(TEAL)))
+            .collect();
+        let refs: Vec<&str> = ticks.iter().map(String::as_str).collect();
+        let style = ProgressStyle::with_template(" {spinner} {msg}")
+            .expect("valid template")
+            .tick_strings(&refs);
+        let spinner =
+            ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr()).with_style(style);
+        let source = clean(source);
+        spinner.set_message(format!("Fetching {source}"));
+        spinner.enable_steady_tick(TICK);
         TerminalProgress {
-            inner: Some(Inner { fetch, ..inner }),
+            inner: Some(Inner {
+                color,
+                glyphs: Glyphs::for_mode(mode),
+                source,
+                spinner,
+                state: Mutex::new(State::default()),
+            }),
         }
     }
 
@@ -120,158 +142,94 @@ impl TerminalProgress {
         TerminalProgress { inner: None }
     }
 
-    /// Settles every line with its result once the report is ready.
+    /// Replaces the spinner with one line per stage once the report is ready.
     pub fn finish(&self, report: &Report, files: usize) {
         let Some(inner) = &self.inner else { return };
         let g = inner.glyphs;
         let c = inner.color;
         let counts = per_analyzer(report);
-        let lines = inner.lines.lock().unwrap_or_else(|e| e.into_inner());
-
-        let fetch_label = format!("Fetched {} @ {}", inner.source, pinned(report));
-        let label_w = lines
-            .iter()
-            .map(|l| width_of(analyzer_name(l.id)))
-            .chain([width_of(&fetch_label)])
-            .max()
-            .unwrap_or(0)
-            .max(LABEL_MIN)
-            + 3;
+        inner.spinner.finish_and_clear();
 
         let plural = if files == 1 { "file" } else { "files" };
-        inner.settle(
-            &inner.fetch,
-            g.ok,
-            Style::fg(GREEN),
-            &format!("{}{files} {plural}", pad(&fetch_label, label_w)),
+        let fetched = format!(
+            "{} @ {} {} {files} {plural}",
+            inner.source,
+            pinned(report),
+            g.dot
         );
-        for line in lines.iter() {
-            let name = pad(analyzer_name(line.id), label_w);
-            let (mark, style, result) = match report.coverage.get(line.id) {
-                Some(Coverage::Failed { .. }) => {
-                    (g.failed, Style::fg(RED), paint(c, "failed", Style::fg(RED)))
-                }
+        eprintln!(
+            "  {} {} {}",
+            paint(c, g.ok, Style::fg(GREEN)),
+            pad("Fetched", NAME_COL),
+            paint(c, &fetched, Style::fg(GREY))
+        );
+
+        let state = inner.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut ids: Vec<&str> = DISPLAY_ORDER.to_vec();
+        ids.extend(
+            state
+                .started
+                .iter()
+                .copied()
+                .filter(|i| !DISPLAY_ORDER.contains(i)),
+        );
+        for id in ids {
+            let (mark, result) = match report.coverage.get(id) {
+                Some(Coverage::Failed { .. }) => (
+                    paint(c, g.failed, Style::fg(RED)),
+                    paint(c, "failed", Style::fg(RED)),
+                ),
                 Some(Coverage::Skipped { .. }) => (
-                    g.skipped,
-                    Style::fg(GREY),
+                    paint(c, g.skipped, Style::fg(GREY)),
                     paint(c, "skipped", Style::fg(GREY)),
                 ),
                 _ => {
-                    let text = counts
-                        .get(line.id)
-                        .and_then(|s| counts_text(s, g.dot))
-                        .map(|t| paint(c, &t, Style::default().bold()))
-                        .unwrap_or_else(|| paint(c, "clean", Style::fg(GREY)));
-                    (g.ok, Style::fg(GREEN), text)
+                    let result = match counts.get(id) {
+                        Some(s) => match counts_text(s, g.dot) {
+                            Some(t) => paint(c, &t, result_style(s)),
+                            None => paint(c, "clean", Style::fg(GREEN)),
+                        },
+                        None => paint(c, "clean", Style::fg(GREEN)),
+                    };
+                    (paint(c, g.ok, Style::fg(GREEN)), result)
                 }
             };
-            inner.settle(&line.bar, mark, style, &format!("{name}{result}"));
+            eprintln!("  {mark} {} {result}", pad(analyzer_name(id), NAME_COL));
         }
-        inner.end_block();
     }
 
     /// Marks the scan as failed before any report exists.
     pub fn fail(&self) {
         let Some(inner) = &self.inner else { return };
-        let lines = inner.lines.lock().unwrap_or_else(|e| e.into_inner());
-        if lines.is_empty() {
-            let text = format!("Could not read {}", inner.source);
-            inner.settle(&inner.fetch, inner.glyphs.failed, Style::fg(RED), &text);
-        }
-        for line in lines.iter() {
-            line.bar.finish_and_clear();
-        }
-        inner.end_block();
-    }
-}
-
-impl Inner {
-    /// The progress block leaves the cursor at the end of its last line;
-    /// move past it so later output starts on a fresh line.
-    fn end_block(&self) {
-        if !self.multi.is_hidden() {
-            eprintln!();
-        }
-    }
-
-    fn spinner(&self, message: &str) -> ProgressBar {
-        let ticks: Vec<String> = SPINNER
-            .iter()
-            .chain([&" "])
-            .map(|t| paint(self.color, t, Style::fg(TEAL)))
-            .collect();
-        let refs: Vec<&str> = ticks.iter().map(String::as_str).collect();
-        let style = ProgressStyle::with_template(" {spinner} {msg}")
-            .expect("valid template")
-            .tick_strings(&refs);
-        let bar = self.multi.add(ProgressBar::new_spinner().with_style(style));
-        bar.set_message(message.to_string());
-        bar.enable_steady_tick(TICK);
-        bar
-    }
-
-    /// Replaces the spinner with `mark` and shows `text`.
-    fn settle(&self, bar: &ProgressBar, mark: &str, style: Style, text: &str) {
-        bar.disable_steady_tick();
-        bar.set_style(ProgressStyle::with_template(" {msg}").expect("valid template"));
-        bar.finish_with_message(format!("{} {text}", paint(self.color, mark, style)));
-    }
-
-    /// A finished analyzer keeps its line until the report gives its result.
-    fn mark_done(&self, bar: &ProgressBar, id: &str) {
-        bar.disable_steady_tick();
-        bar.set_style(ProgressStyle::with_template(" {msg}").expect("valid template"));
-        bar.set_message(format!(
-            "{} {}",
-            paint(self.color, self.glyphs.ok, Style::fg(GREEN)),
-            analyzer_name(id)
-        ));
+        inner.spinner.finish_and_clear();
+        eprintln!(
+            "  {} Could not read {}",
+            paint(inner.color, inner.glyphs.failed, Style::fg(RED)),
+            inner.source
+        );
     }
 }
 
 impl ProgressSink for TerminalProgress {
     fn event(&self, e: ProgressEvent) {
         let Some(inner) = &self.inner else { return };
-        let mut lines = inner.lines.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = inner.state.lock().unwrap_or_else(|e| e.into_inner());
         match e {
             ProgressEvent::Started { id } => {
-                if lines.is_empty() {
-                    inner.fetch.disable_steady_tick();
-                    inner
-                        .fetch
-                        .set_style(ProgressStyle::with_template(" {msg}").expect("valid template"));
-                    inner.fetch.set_message(format!(
-                        "{} Fetched {}",
-                        paint(inner.color, inner.glyphs.ok, Style::fg(GREEN)),
-                        inner.source
-                    ));
-                    for known in DISPLAY_ORDER {
-                        let bar = inner.spinner(analyzer_name(known));
-                        lines.push(Line { id: known, bar });
-                    }
-                }
-                if !lines.iter().any(|l| l.id == id) {
-                    let bar = inner.spinner(analyzer_name(id));
-                    lines.push(Line { id, bar });
+                if !state.started.contains(&id) {
+                    state.started.push(id);
                 }
             }
-            ProgressEvent::Finished { id, .. } => {
-                if let Some(l) = lines.iter().find(|l| l.id == id) {
-                    inner.mark_done(&l.bar, id);
-                }
-            }
-            ProgressEvent::Failed { id } => {
-                if let Some(l) = lines.iter().find(|l| l.id == id) {
-                    l.bar.disable_steady_tick();
-                    l.bar
-                        .set_style(ProgressStyle::with_template(" {msg}").expect("valid template"));
-                    l.bar.set_message(format!(
-                        "{} {}",
-                        paint(inner.color, inner.glyphs.failed, Style::fg(RED)),
-                        analyzer_name(id)
-                    ));
-                }
+            ProgressEvent::Finished { .. } | ProgressEvent::Failed { .. } => {
+                state.done += 1;
             }
         }
+        let total = state.started.len().max(DISPLAY_ORDER.len());
+        let msg = if state.started.is_empty() {
+            format!("Fetching {}", inner.source)
+        } else {
+            format!("Checking {} of {total} stages", state.done.min(total))
+        };
+        inner.spinner.set_message(msg);
     }
 }
