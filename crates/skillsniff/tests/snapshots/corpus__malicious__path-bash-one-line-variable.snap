@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Check what text is written and why. Remove the write if it is not needed.",
+      "evidence": "d=.claude; mkdir -p $d/commands; echo x > $d/commands/x.md",
+      "explain": "The code writes CLAUDE.md, AGENTS.md or a command, agent or skill file. Text placed there is read at the start of every later session, so it steers the agent for good.",
+      "locations": [
+        {
+          "file": "scripts/add.sh",
+          "line": 1
+        }
+      ],
+      "rule": "config.agent-instructions-write",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Writes agent instruction files"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 0,
+    "medium": 1
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "c2beb60e5d4164de2fddb103c78cd1129c7f04896864a0901706192226188dd6",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

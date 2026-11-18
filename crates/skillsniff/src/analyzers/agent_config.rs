@@ -727,7 +727,11 @@ fn is_word(c: char) -> bool {
 fn fold_path_variables(lines: &mut [String]) {
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
     let mut values: BTreeMap<String, String> = BTreeMap::new();
-    for line in lines.iter() {
+    let segments = lines
+        .iter()
+        .flat_map(|l| l.split(';'))
+        .flat_map(|l| l.split("&&"));
+    for line in segments {
         let t = line.trim();
         let t = [
             "export ", "const ", "let ", "var ", "local ", "declare ", "set ",

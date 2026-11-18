@@ -1,0 +1,69 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Replace dynamic evaluation with direct calls.",
+      "evidence": "eval \"$1\"",
+      "explain": "The code evaluates a string as code, which hides what will really run.",
+      "locations": [
+        {
+          "file": "scripts/run.sh",
+          "line": 3
+        }
+      ],
+      "rule": "exec.eval",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Evaluates dynamic code"
+    },
+    {
+      "advice": "Find where the command text comes from and what it can contain.",
+      "evidence": "bash -c \"$c\"",
+      "explain": "The program, or the text a shell is told to run, is built at run time (a variable, a parameter or an expansion) instead of written out. What runs cannot be read from the code, and a fetched string can end up there.",
+      "locations": [
+        {
+          "file": "scripts/run.sh",
+          "line": 4
+        }
+      ],
+      "rule": "exec.dynamic-command",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Runs a command that is not fixed in the code"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 1,
+    "low": 0,
+    "medium": 1
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "616af273a86d0d8bbe1c11c9cd6421a68256844136f43618bddd42086bc59b4e",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

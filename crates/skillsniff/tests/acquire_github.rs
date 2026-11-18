@@ -269,6 +269,24 @@ fn explicit_ref_is_used_in_the_api_request() {
 }
 
 #[test]
+fn full_sha_ref_skips_the_api_lookup() {
+    let srv = repo_server();
+    let src = Source::GitHub {
+        owner: "o".into(),
+        repo: "r".into(),
+        path: Some("skills/demo".into()),
+        git_ref: Some(SHA.to_ascii_uppercase()),
+    };
+    let got =
+        acquire_github_with_token(&src, &Limits::default(), &srv.base, &srv.base, false, None)
+            .unwrap();
+    assert_eq!(got.commit.as_deref(), Some(SHA));
+    let reqs = srv.requests.lock().unwrap();
+    assert_eq!(reqs.len(), 1, "{reqs:?}");
+    assert!(reqs[0].starts_with(&format!("GET /o/r/tar.gz/{SHA} ")));
+}
+
+#[test]
 fn missing_path_in_tarball_is_not_found() {
     let srv = repo_server();
     let err = acquire_github_with_token(

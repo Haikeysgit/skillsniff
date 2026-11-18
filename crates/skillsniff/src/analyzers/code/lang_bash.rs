@@ -161,6 +161,9 @@ struct Walk<'t> {
     array_ok: HashMap<String, bool>,
     /// `name+=(...)` appends to an array variable.
     appends: HashMap<String, usize>,
+    /// A write the walk cannot follow (`source`, `eval`, a namref, a computed
+    /// name): no variable is folded in this file.
+    fold_off: bool,
     cursor: Option<TreeCursor<'t>>,
 }
 
@@ -183,6 +186,7 @@ impl<'t> Walk<'t> {
             array_first: HashMap::new(),
             array_ok: HashMap::new(),
             appends: HashMap::new(),
+            fold_off: arithmetic_assigns(src),
             cursor: None,
         }
     }
@@ -420,10 +424,29 @@ impl<'t> Walk<'t> {
                 inner.in_literal = true;
             }
             "variable_assignment" => self.assignment(node),
+            k if k.contains("arithmetic") => {
+                let t = self.text(node);
+                if t.contains('=') && !t.contains("==") {
+                    self.fold_off = true;
+                }
+            }
             "declaration_command" => {
                 for c in self.core.children_upto(node, usize::MAX) {
-                    if c.kind() == "variable_name" {
-                        self.core.not_values.insert(c.start_byte());
+                    match c.kind() {
+                        "variable_name" => {
+                            self.core.not_values.insert(c.start_byte());
+                        }
+                        "variable_assignment" => {}
+                        // `declare -n ref=var` makes a name reference.
+                        "word" => {
+                            let t = self.text(c);
+                            if t.starts_with('-') && t.contains('n') {
+                                self.fold_off = true;
+                            }
+                        }
+                        // A quoted or computed argument (`declare "c=$1"`)
+                        // writes a variable the walk cannot name.
+                        _ => self.fold_off = true,
                     }
                 }
             }
@@ -463,6 +486,10 @@ impl<'t> Walk<'t> {
 
     /// `$NAME` and `${NAME…}` of a secret-looking variable is a source.
     fn expansion(&mut self, node: Node<'t>) {
+        let t = self.text(node);
+        if t.starts_with("${") && (t.contains(":=") || t.contains('=')) && !t.contains("==") {
+            self.fold_off = true;
+        }
         let var = self
             .core
             .children_upto(node, usize::MAX)
@@ -1133,6 +1160,23 @@ impl<'t> Walk<'t> {
     ) {
         let texts: Vec<&str> = rest.iter().map(|(_, t)| t.as_str()).collect();
         let any = |f: &dyn Fn(&str) -> bool| texts.iter().any(|t| f(t));
+        let computed = |t: &str| t.contains(['$', UNKNOWN_PIECE, '`']);
+        match prog {
+            "source" | "." | "eval" | "let" => self.fold_off = true,
+            "printf" => {
+                if let Some(at) = texts.iter().position(|t| *t == "-v")
+                    && texts.get(at + 1).is_none_or(|n| computed(n))
+                {
+                    self.fold_off = true;
+                }
+            }
+            "read" | "mapfile" | "readarray"
+                if texts.iter().any(|t| !is_option(t) && computed(t)) =>
+            {
+                self.fold_off = true;
+            }
+            _ => {}
+        }
         if prog == "getopts" {
             // `getopts spec NAME` writes NAME.
             if let Some(name) = texts.get(1) {
@@ -1724,6 +1768,7 @@ impl<'t> Walk<'t> {
     /// (which may name other such variables, to a bounded depth).
     fn value_of(&self, name: &str, depth: usize) -> Option<String> {
         if depth == 0
+            || self.fold_off
             || self.assigned.get(name) != Some(&1)
             || !self.assigned_all.contains_key(name)
             || !self.only_known_writes(name)
@@ -1738,7 +1783,8 @@ impl<'t> Walk<'t> {
     /// Whether a variable only ever receives `name=(literal ...)` and
     /// appends, so its first item is a literal.
     fn array_fixed(&self, name: &str) -> bool {
-        self.array_ok.get(name) == Some(&true)
+        !self.fold_off
+            && self.array_ok.get(name) == Some(&true)
             && self.array_first.contains_key(name)
             && self.only_known_writes(name)
     }
@@ -1791,10 +1837,11 @@ impl<'t> Walk<'t> {
                 // is given is a literal (or an array starting with one).
                 let fixed = self.array_fixed(var)
                     || self.value_of(var, 4).is_some()
-                    || (self
-                        .assigned_all
-                        .get(var)
-                        .is_some_and(|v| !v.is_empty() && v.iter().all(|l| *l))
+                    || (!self.fold_off
+                        && self
+                            .assigned_all
+                            .get(var)
+                            .is_some_and(|v| !v.is_empty() && v.iter().all(|l| *l))
                         && self.only_known_writes(var));
                 results.push((false, !fixed));
                 continue;
@@ -2122,4 +2169,25 @@ fn only_identity_secrets(command: &str) -> bool {
         i += 1;
     }
     literal_source_class(&rest.join(" ")).is_none()
+}
+
+/// Whether `((...))` somewhere assigns (`((c=$1))`, `((c+=1))`).
+fn arithmetic_assigns(src: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(src);
+    let mut rest: &str = &text;
+    while let Some(at) = rest.find("((") {
+        let body = &rest[at + 2..];
+        let end = body.find("))").unwrap_or(body.len());
+        let b = &body.as_bytes()[..end];
+        let assigns = b.iter().enumerate().any(|(i, &c)| {
+            c == b'='
+                && b.get(i + 1) != Some(&b'=')
+                && (i == 0 || !matches!(b[i - 1], b'=' | b'!' | b'<' | b'>'))
+        });
+        if assigns {
+            return true;
+        }
+        rest = &body[end..];
+    }
+    false
 }
