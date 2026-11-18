@@ -1,6 +1,7 @@
 //! Code analyzer: parses scripts with tree-sitter, reports secret sources and
 //! dangerous sinks, and tracks taint from one to the other within a file.
 
+mod common;
 pub mod lang_python;
 pub mod patterns;
 pub mod taint;

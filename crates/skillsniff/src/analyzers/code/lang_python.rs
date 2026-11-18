@@ -4,37 +4,21 @@
 //! document order; a second step resolves import aliases, classifies sites and
 //! turns byte ranges into the identifiers and site ids they reference.
 
-use std::cell::Cell;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::OnceLock;
-use std::time::Instant;
 
-use tree_sitter::{Language, Node, Query, QueryCursor, StreamingIterator, Tree};
+use tree_sitter::{Language, Node, Query, Tree};
 
+use super::common::{
+    Call, Core, MAX_CHILDREN, MAX_FOLD_NODES, MAX_NAME_SEGMENTS, TEXT_CHARS, last_segment, line,
+    named_children, run_query,
+};
 use super::patterns::{
     DOWNLOAD_EXEC, EVAL, EXEC, NETWORK, REVERSE_SHELL, SENSITIVE_WRITE, env_class,
     is_sensitive_write_path, literal_source_class, normalize_path, pipes_download_to_shell,
 };
-use super::taint::{Facts, Site, reached};
-use super::{LangRules, PARSE_BUDGET, clip};
-
-/// Sources, sinks and sensitive paths kept per file.
-const MAX_SITES: usize = 10_000;
-const MAX_ASSIGNS: usize = 100_000;
-/// Distinct references kept per site or assignment.
-const MAX_REFS: usize = 1_024;
-/// Tokens scanned per range before giving up on the rest.
-const MAX_REF_SCAN: usize = 65_536;
-/// Token visits allowed across all reference lookups in one file.
-const MAX_TOTAL_SCAN: usize = 20_000_000;
-/// Reference entries stored across all assignments of one file.
-const MAX_TOTAL_REFS: usize = 2_000_000;
-const MAX_NAME_SEGMENTS: usize = 32;
-const MAX_FOLD_NODES: usize = 256;
-const MAX_CHILDREN: u32 = 64;
-const TEXT_CHARS: usize = 80;
-/// Captures between budget checks.
-const BUDGET_CHECK_EVERY: usize = 4_096;
+use super::taint::{Facts, Site};
+use super::{LangRules, clip};
 
 const QUERY: &str = r#"
 (identifier) @ident
@@ -116,22 +100,10 @@ fn query() -> &'static Query {
     })
 }
 
-fn line(node: Node) -> u32 {
-    u32::try_from(node.start_position().row + 1).unwrap_or(u32::MAX)
-}
-
 /// Text inside the quotes of a Python string literal.
 fn string_content(text: &str) -> &str {
     text.trim_start_matches(|c: char| c.is_ascii_alphabetic())
         .trim_matches(|c| c == '"' || c == '\'')
-}
-
-/// Last segment of a dotted name, without a call suffix.
-fn last_segment(name: &str) -> &str {
-    name.rsplit('.')
-        .next()
-        .unwrap_or(name)
-        .trim_end_matches("()")
 }
 
 /// Sink class of a resolved call name.
@@ -191,102 +163,34 @@ fn is_connect(name: &str) -> bool {
         || (name.starts_with("socket.") && matches!(last_segment(name), "connect" | "connect_ex"))
 }
 
-/// A call seen in the tree.
-struct Call<'t> {
-    node: Node<'t>,
-    id: String,
-    callee: Option<String>,
-    args: Option<Node<'t>>,
-}
-
-/// A binding: `targets = <ranges>`.
-struct Bind {
-    targets: Vec<String>,
-    ranges: Vec<(usize, usize)>,
-    extra: Vec<String>,
-    line: u32,
-    rhs_callee: Option<String>,
-}
-
-/// A reference inside a byte range: an identifier, a dotted name or a site id.
-struct Token {
-    start: usize,
-    end: usize,
-    name: String,
-    ident: bool,
-}
-
 enum FoldItem<'t> {
     Node(Node<'t>),
     Sep,
 }
 
 struct Extract<'t> {
-    src: &'t [u8],
-    tokens: Vec<Token>,
-    not_values: HashSet<usize>,
+    core: Core<'t>,
     docstrings: HashSet<usize>,
     strings: Vec<Node<'t>>,
     binops: Vec<Node<'t>>,
     subscripts: Vec<Node<'t>>,
-    calls: Vec<Call<'t>>,
-    binds: Vec<Bind>,
-    aliases: HashMap<String, String>,
-    objects: HashMap<String, String>,
     funcs: Vec<(String, usize)>,
-    sources: Vec<Site>,
-    sensitive: Vec<String>,
-    next_id: usize,
-    /// Token visits left for reference lookups before analysis gives up.
-    scan_left: Cell<usize>,
-    /// Some cap dropped facts; the analysis is partial.
-    truncated: Cell<bool>,
-    /// Site ids worth keeping in references (sources, sensitive paths,
-    /// network sinks); other ids are skipped.
-    interesting: HashSet<String>,
 }
 
 impl<'t> Extract<'t> {
     fn new(src: &'t [u8]) -> Self {
         Self {
-            src,
-            tokens: Vec::new(),
-            not_values: HashSet::new(),
+            core: Core::new(src),
             docstrings: HashSet::new(),
             strings: Vec::new(),
             binops: Vec::new(),
             subscripts: Vec::new(),
-            calls: Vec::new(),
-            binds: Vec::new(),
-            aliases: HashMap::new(),
-            objects: HashMap::new(),
             funcs: Vec::new(),
-            sources: Vec::new(),
-            sensitive: Vec::new(),
-            next_id: 0,
-            scan_left: Cell::new(MAX_TOTAL_SCAN),
-            truncated: Cell::new(false),
-            interesting: HashSet::new(),
         }
     }
 
     fn text(&self, node: Node) -> &'t str {
-        let src: &'t [u8] = self.src;
-        std::str::from_utf8(&src[node.byte_range()]).unwrap_or("")
-    }
-
-    fn fresh_id(&mut self, prefix: char) -> String {
-        self.next_id += 1;
-        format!("#{prefix}{}", self.next_id)
-    }
-
-    fn token(&mut self, node: Node, name: String, ident: bool) {
-        self.tokens.push(Token {
-            start: node.start_byte(),
-            end: node.end_byte(),
-            name,
-            ident,
-        });
+        self.core.text(node)
     }
 
     /// Dotted name such as `requests.Session().post`; calls are allowed only
@@ -318,25 +222,9 @@ impl<'t> Extract<'t> {
         None
     }
 
-    /// Replaces an imported alias or a network object variable at the head
-    /// of `name` with what it stands for.
-    fn resolve(&self, name: &str) -> String {
-        let cut = name.find(['.', '(']).unwrap_or(name.len());
-        let (head, rest) = name.split_at(cut);
-        if let Some(full) = self.aliases.get(head) {
-            return format!("{full}{rest}");
-        }
-        if rest.starts_with('.')
-            && let Some(obj) = self.objects.get(head)
-        {
-            return format!("{obj}{rest}");
-        }
-        name.to_string()
-    }
-
     fn callee(&self, call: Node) -> Option<String> {
         let f = call.child_by_field_name("function")?;
-        self.dotted(f, true).map(|n| self.resolve(&n))
+        self.dotted(f, true).map(|n| self.core.resolve(&n))
     }
 
     /// Variable names bound by an assignment target.
@@ -362,8 +250,7 @@ impl<'t> Extract<'t> {
                 | "list"
                 | "list_splat_pattern"
                 | "as_pattern_target" => {
-                    let count = u32::try_from(n.named_child_count()).unwrap_or(u32::MAX);
-                    stack.extend((0..count.min(MAX_CHILDREN)).filter_map(|i| n.named_child(i)));
+                    stack.extend(named_children(n));
                 }
                 _ => {}
             }
@@ -372,62 +259,34 @@ impl<'t> Extract<'t> {
     }
 
     fn bind(&mut self, targets: Vec<String>, rhs: Option<Node>, end: Option<usize>, line: u32) {
-        let Some(rhs) = rhs else { return };
-        if targets.is_empty() {
-            return;
-        }
-        if self.binds.len() >= MAX_ASSIGNS {
-            self.truncated.set(true);
-            return;
-        }
-        let rhs_callee = (rhs.kind() == "call")
-            .then(|| rhs.child_by_field_name("function"))
-            .flatten()
+        let rhs_callee = rhs
+            .filter(|r| r.kind() == "call")
+            .and_then(|r| r.child_by_field_name("function"))
             .and_then(|f| self.dotted(f, true));
-        self.binds.push(Bind {
-            targets,
-            ranges: vec![(rhs.start_byte(), end.unwrap_or(rhs.end_byte()))],
-            extra: Vec::new(),
-            line,
-            rhs_callee,
-        });
+        self.core.bind(targets, rhs, end, line, rhs_callee);
     }
 
     /// First pass. Returns false when the time budget ran out.
     fn collect(&mut self, tree: &'t Tree) -> bool {
-        let started = Instant::now();
-        let q = query();
-        let names = q.capture_names();
-        let mut cursor = QueryCursor::new();
-        let mut caps = cursor.captures(q, tree.root_node(), self.src);
-        let mut seen = 0usize;
-        while let Some((m, i)) = caps.next() {
-            seen += 1;
-            if seen.is_multiple_of(BUDGET_CHECK_EVERY) && started.elapsed() > PARSE_BUDGET {
-                return false;
-            }
-            let cap = m.captures()[*i];
-            let node = cap.node;
-            self.capture(names[cap.index as usize], node);
-        }
-        true
+        let src = self.core.src;
+        run_query(query(), tree, src, |kind, node| self.capture(kind, node))
     }
 
     fn capture(&mut self, kind: &str, node: Node<'t>) {
         let ln = line(node);
         match kind {
-            "ident" => self.token(node, self.text(node).to_string(), true),
+            "ident" => self.core.token(node, self.text(node).to_string(), true),
             "attr" => {
                 if let Some(a) = node.child_by_field_name("attribute") {
-                    self.not_values.insert(a.start_byte());
+                    self.core.not_values.insert(a.start_byte());
                 }
                 if let Some(d) = self.dotted(node, false) {
-                    self.token(node, d, false);
+                    self.core.token(node, d, false);
                 }
             }
             "kwarg" => {
                 if let Some(n) = node.child_by_field_name("name") {
-                    self.not_values.insert(n.start_byte());
+                    self.core.not_values.insert(n.start_byte());
                 }
             }
             "str" => self.strings.push(node),
@@ -442,18 +301,11 @@ impl<'t> Extract<'t> {
             }
             "subscript" => self.subscripts.push(node),
             "call" => {
-                let id = self.fresh_id('c');
-                self.token(node, id.clone(), false);
                 let callee = node
                     .child_by_field_name("function")
                     .and_then(|f| self.dotted(f, true));
                 let args = node.child_by_field_name("arguments");
-                self.calls.push(Call {
-                    node,
-                    id,
-                    callee,
-                    args,
-                });
+                self.core.add_call(node, callee, args);
             }
             "assign" | "augassign" => {
                 let Some(left) = node.child_by_field_name("left") else {
@@ -464,11 +316,11 @@ impl<'t> Extract<'t> {
                     return;
                 }
                 let targets = self.targets(left);
-                let before = self.binds.len();
+                let before = self.core.binds.len();
                 self.bind(targets.clone(), node.child_by_field_name("right"), None, ln);
                 if kind == "augassign"
-                    && self.binds.len() > before
-                    && let Some(b) = self.binds.last_mut()
+                    && self.core.binds.len() > before
+                    && let Some(b) = self.core.binds.last_mut()
                 {
                     b.extra = targets;
                 }
@@ -497,7 +349,7 @@ impl<'t> Extract<'t> {
             }
             "func" => {
                 if let Some(n) = node.child_by_field_name("name") {
-                    self.not_values.insert(n.start_byte());
+                    self.core.not_values.insert(n.start_byte());
                     self.funcs.push((self.text(n).to_string(), node.end_byte()));
                 }
             }
@@ -571,111 +423,13 @@ impl<'t> Extract<'t> {
             };
             let local = alias.unwrap_or_else(|| name.split('.').next().unwrap_or(name));
             if local != full {
-                self.aliases.insert(local.to_string(), full);
+                self.core.aliases.insert(local.to_string(), full);
             }
         }
     }
 }
 
 impl<'t> Extract<'t> {
-    /// Identifiers and interesting site ids inside the byte ranges,
-    /// deduplicated, site ids first. Any cap hit marks the facts truncated.
-    fn refs(&self, ranges: &[(usize, usize)]) -> Vec<String> {
-        let mut ids = BTreeSet::new();
-        let mut names = BTreeSet::new();
-        'ranges: for &(s, e) in ranges {
-            let first = self.tokens.partition_point(|t| t.start < s);
-            for (scanned, t) in self.tokens[first..].iter().enumerate() {
-                if t.start >= e {
-                    break;
-                }
-                let left = self.scan_left.get();
-                if left == 0 || scanned == MAX_REF_SCAN {
-                    self.truncated.set(true);
-                    break 'ranges;
-                }
-                self.scan_left.set(left - 1);
-                if t.end > e {
-                    continue;
-                }
-                let name = t.name.as_str();
-                let (set, keep) = if name.starts_with('#') {
-                    (&mut ids, self.interesting.contains(name))
-                } else {
-                    (&mut names, true)
-                };
-                if !keep || set.contains(name) {
-                    continue;
-                }
-                if set.len() >= MAX_REFS {
-                    self.truncated.set(true);
-                    continue;
-                }
-                set.insert(name);
-            }
-        }
-        ids.into_iter().chain(names).map(str::to_string).collect()
-    }
-
-    /// `callee(literal)` for the innermost call (other than a path helper)
-    /// whose arguments contain `node`, else the literal quoted.
-    fn describe_in_call(&self, node: Node, shown: &str) -> String {
-        let shown = clip(shown, TEXT_CHARS);
-        let upto = self
-            .calls
-            .partition_point(|c| c.node.start_byte() <= node.start_byte());
-        for c in self.calls[..upto].iter().rev().take(64) {
-            let (Some(args), Some(name)) = (c.args, c.callee.as_deref()) else {
-                continue;
-            };
-            let inside =
-                args.start_byte() <= node.start_byte() && node.end_byte() <= args.end_byte();
-            if inside && !is_path_builder(name) {
-                return format!("{}({shown})", clip(name, TEXT_CHARS));
-            }
-        }
-        format!("'{shown}'")
-    }
-
-    /// Adds a source site; `id` reuses an existing token (a call) when given.
-    fn add_source(&mut self, node: Node, class: &str, text: String, id: Option<String>) {
-        if self.sources.len() >= MAX_SITES {
-            self.truncated.set(true);
-            return;
-        }
-        let id = id.unwrap_or_else(|| {
-            let id = self.fresh_id('s');
-            self.token(node, id.clone(), false);
-            id
-        });
-        self.sources.push(Site {
-            id,
-            class: class.to_string(),
-            line: line(node),
-            args_refs: Vec::new(),
-            text,
-        });
-    }
-
-    fn add_sensitive(&mut self, node: Node) {
-        if self.sensitive.len() >= MAX_SITES {
-            self.truncated.set(true);
-            return;
-        }
-        let id = self.fresh_id('p');
-        self.token(node, id.clone(), false);
-        self.sensitive.push(id);
-    }
-
-    /// Whether spans sorted by start have one of `class` inside `node`.
-    fn has_span_within(spans: &[(usize, usize, &str)], node: Node, class: &str) -> bool {
-        let first = spans.partition_point(|s| s.0 < node.start_byte());
-        spans[first..]
-            .iter()
-            .take_while(|s| s.0 < node.end_byte())
-            .any(|s| s.1 <= node.end_byte() && s.2 == class)
-    }
-
     /// Path text an expression builds from string literals, `/` and `+`,
     /// `os.path.join`, `Path(...)`, `joinpath` and `Path.home()`. Ids of the
     /// nodes it walked go into `visited`.
@@ -749,27 +503,6 @@ impl<'t> Extract<'t> {
         normalize_path(&out)
     }
 
-    /// Network client objects (see [`CLIENT_CONSTRUCTORS`]), then resolves
-    /// every call name.
-    fn network_objects(&mut self) {
-        let mut objects = HashMap::new();
-        for b in &self.binds {
-            let ([target], Some(callee)) = (b.targets.as_slice(), b.rhs_callee.as_deref()) else {
-                continue;
-            };
-            let full = self.resolve(callee);
-            if CLIENT_CONSTRUCTORS.contains(&full.as_str()) {
-                objects.insert(target.clone(), format!("{full}()"));
-            }
-        }
-        self.objects = objects;
-        let mut calls = std::mem::take(&mut self.calls);
-        for c in &mut calls {
-            c.callee = c.callee.take().map(|n| self.resolve(&n));
-        }
-        self.calls = calls;
-    }
-
     /// String literal sources and sensitive paths, with their spans.
     fn literal_sites(&mut self) -> Vec<(usize, usize, &'static str)> {
         let mut spans = Vec::new();
@@ -779,12 +512,14 @@ impl<'t> Extract<'t> {
             }
             let raw = self.text(s);
             if let Some(class) = literal_source_class(raw) {
-                let text = self.describe_in_call(s, string_content(raw));
-                self.add_source(s, class, text, None);
+                let text = self
+                    .core
+                    .describe_in_call(s, string_content(raw), is_path_builder);
+                self.core.add_source(s, class, text, None);
                 spans.push((s.start_byte(), s.end_byte(), class));
             }
             if is_sensitive_write_path(raw) {
-                self.add_sensitive(s);
+                self.core.add_sensitive(s);
                 spans.push((s.start_byte(), s.end_byte(), SENSITIVE_WRITE));
             }
         }
@@ -798,7 +533,8 @@ impl<'t> Extract<'t> {
     fn fold_sites(&mut self, spans: &[(usize, usize, &str)]) {
         let mut cands = std::mem::take(&mut self.binops);
         cands.extend(
-            self.calls
+            self.core
+                .calls
                 .iter()
                 .filter(|c| c.callee.as_deref().is_some_and(is_path_builder))
                 .map(|c| c.node),
@@ -814,14 +550,14 @@ impl<'t> Extract<'t> {
                 continue;
             }
             if let Some(class) = literal_source_class(&folded)
-                && !Self::has_span_within(spans, n, class)
+                && !Core::has_span_within(spans, n, class)
             {
-                let text = self.describe_in_call(n, &folded);
-                self.add_source(n, class, text, None);
+                let text = self.core.describe_in_call(n, &folded, is_path_builder);
+                self.core.add_source(n, class, text, None);
             }
-            if is_sensitive_write_path(&folded) && !Self::has_span_within(spans, n, SENSITIVE_WRITE)
+            if is_sensitive_write_path(&folded) && !Core::has_span_within(spans, n, SENSITIVE_WRITE)
             {
-                self.add_sensitive(n);
+                self.core.add_sensitive(n);
             }
         }
     }
@@ -832,7 +568,7 @@ impl<'t> Extract<'t> {
             let name = s
                 .child_by_field_name("value")
                 .and_then(|v| self.dotted(v, false))
-                .map(|d| self.resolve(&d));
+                .map(|d| self.core.resolve(&d));
             if name.as_deref() != Some("os.environ") {
                 continue;
             }
@@ -845,14 +581,14 @@ impl<'t> Extract<'t> {
             let key = string_content(self.text(key));
             if let Some(class) = env_class(key) {
                 let text = format!("os.environ[{}]", clip(key, TEXT_CHARS));
-                self.add_source(s, class, text, None);
+                self.core.add_source(s, class, text, None);
             }
         }
     }
 
     /// `os.getenv("NAME")` and `os.environ.get("NAME")` style reads.
     fn env_calls(&mut self) {
-        let calls = std::mem::take(&mut self.calls);
+        let calls = std::mem::take(&mut self.core.calls);
         for c in &calls {
             let Some(name) = c.callee.as_deref() else {
                 continue;
@@ -867,10 +603,11 @@ impl<'t> Extract<'t> {
                 .map(|k| string_content(self.text(k)));
             if let Some((key, class)) = key.and_then(|k| Some((k, env_class(k)?))) {
                 let text = format!("{name}({})", clip(key, TEXT_CHARS));
-                self.add_source(c.node, class, text, Some(c.id.clone()));
+                self.core
+                    .add_source(c.node, class, text, Some(c.id.clone()));
             }
         }
-        self.calls = calls;
+        self.core.calls = calls;
     }
 
     /// Positional arguments (up to 8) and keyword arguments of a call.
@@ -938,11 +675,7 @@ impl<'t> Extract<'t> {
         } else {
             None
         };
-        path.is_some_and(|p| {
-            self.refs(&[(p.start_byte(), p.end_byte())])
-                .iter()
-                .any(|r| sensitive.contains(r))
-        })
+        path.is_some_and(|p| self.core.node_refs(p).iter().any(|r| sensitive.contains(r)))
     }
 
     /// Whether an exec call runs a shell command that fetches with curl or
@@ -963,11 +696,7 @@ impl<'t> Extract<'t> {
             if is_str(&first) && (matches!(name, "os.system" | "os.popen") || shell_true) {
                 vec![first]
             } else if first.kind() == "list" {
-                let count = u32::try_from(first.named_child_count()).unwrap_or(u32::MAX);
-                let items: Vec<Node> = (0..count.min(MAX_CHILDREN))
-                    .filter_map(|i| first.named_child(i))
-                    .filter(is_str)
-                    .collect();
+                let items: Vec<Node> = named_children(first).filter(is_str).collect();
                 let word = |w: &[&str]| {
                     items
                         .iter()
@@ -986,26 +715,12 @@ impl<'t> Extract<'t> {
             .any(|n| pipes_download_to_shell(self.text(*n)))
     }
 
-    fn sink(&self, c: &Call, name: &str, class: &str, text: Option<String>) -> Site {
-        let args_refs = c
-            .args
-            .map(|a| self.refs(&[(a.start_byte(), a.end_byte())]))
-            .unwrap_or_default();
-        Site {
-            id: c.id.clone(),
-            class: class.to_string(),
-            line: line(c.node),
-            args_refs,
-            text: text.unwrap_or_else(|| format!("{}(...)", clip(name, TEXT_CHARS))),
-        }
-    }
-
     /// Every sink.
     fn call_sites(&mut self, sensitive: &HashSet<String>) -> Vec<Site> {
         let mut sinks = Vec::new();
         let mut connect = false;
         let mut first_dup: Option<usize> = None;
-        let calls = std::mem::take(&mut self.calls);
+        let calls = std::mem::take(&mut self.core.calls);
         for (idx, c) in calls.iter().enumerate() {
             let Some(name) = c.callee.as_deref() else {
                 continue;
@@ -1025,103 +740,45 @@ impl<'t> Extract<'t> {
                     .then_some(SENSITIVE_WRITE),
             };
             let Some(class) = class else { continue };
-            if sinks.len() >= MAX_SITES {
-                self.truncated.set(true);
-                continue;
-            }
-            sinks.push(self.sink(c, name, class, None));
+            self.core
+                .push_sink(&mut sinks, || self.core.sink(c, name, class, None));
         }
         if let (true, Some(i)) = (connect, first_dup) {
             let c = &calls[i];
             let name = c.callee.as_deref().unwrap_or_default();
             let text = format!("socket connect + {}(...)", clip(name, TEXT_CHARS));
-            sinks.push(self.sink(c, name, REVERSE_SHELL, Some(text)));
+            sinks.push(self.core.sink(c, name, REVERSE_SHELL, Some(text)));
         }
-        self.calls = calls;
+        self.core.calls = calls;
         sinks
-    }
-
-    /// Assignments with resolved references. A binding with several targets
-    /// stores its references once under a synthetic `@b<n>` name that each
-    /// target then references.
-    fn assigns(&self) -> Vec<(String, Vec<String>, u32)> {
-        let mut assigns = Vec::new();
-        let mut stored = 0usize;
-        for (i, b) in self.binds.iter().enumerate() {
-            let mut refs = self.refs(&b.ranges);
-            refs.extend(b.extra.iter().cloned());
-            stored += refs.len() + b.targets.len();
-            if stored > MAX_TOTAL_REFS || assigns.len() + b.targets.len() > MAX_ASSIGNS {
-                self.truncated.set(true);
-                break;
-            }
-            if let [target] = b.targets.as_slice() {
-                assigns.push((target.clone(), refs, b.line));
-                continue;
-            }
-            let shared = format!("@b{i}");
-            assigns.push((shared.clone(), refs, b.line));
-            for t in &b.targets {
-                assigns.push((t.clone(), vec![shared.clone()], b.line));
-            }
-        }
-        assigns
     }
 
     /// Second pass: classify, resolve references and build the facts.
     fn finish(mut self) -> Facts {
-        let not_values = std::mem::take(&mut self.not_values);
-        self.tokens
-            .retain(|t| !(t.ident && not_values.contains(&t.start)));
-        self.network_objects();
+        self.core.resolve_calls(CLIENT_CONSTRUCTORS);
         let spans = self.literal_sites();
         self.fold_sites(&spans);
         self.env_subscripts();
         self.env_calls();
-        self.tokens
-            .sort_by_key(|t| (t.start, std::cmp::Reverse(t.end)));
+        self.core.index_tokens();
 
-        let network = self.calls.iter().filter(|c| {
-            c.callee
-                .as_deref()
-                .is_some_and(|n| sink_class(n) == Some(NETWORK))
-        });
-        let interesting: HashSet<String> = self
-            .sources
+        let network: Vec<String> = self
+            .core
+            .calls
             .iter()
-            .map(|s| s.id.clone())
-            .chain(self.sensitive.iter().cloned())
-            .chain(network.map(|c| c.id.clone()))
+            .filter(|c| {
+                c.callee
+                    .as_deref()
+                    .is_some_and(|n| sink_class(n) == Some(NETWORK))
+            })
+            .map(|c| c.id.clone())
             .collect();
-        self.interesting = interesting;
+        self.core.set_interesting(network);
 
-        let mut assigns = self.assigns();
-        let seeds: Vec<&str> = self.sensitive.iter().map(String::as_str).collect();
-        let (sensitive, cut) = reached(&assigns, &seeds);
-        if cut {
-            self.truncated.set(true);
-        }
-        let mut sinks = self.call_sites(&sensitive);
-
-        let valid: HashSet<String> = self
-            .sources
-            .iter()
-            .chain(&sinks)
-            .map(|s| s.id.clone())
-            .collect();
-        let keep = |r: &String| !r.starts_with('#') || valid.contains(r);
-        for a in &mut assigns {
-            a.1.retain(keep);
-        }
-        for s in &mut sinks {
-            s.args_refs.retain(keep);
-        }
-        Facts {
-            sources: self.sources,
-            sinks,
-            assigns,
-            budget_exceeded: self.truncated.get(),
-        }
+        let assigns = self.core.assigns();
+        let sensitive = self.core.sensitive_reach(&assigns);
+        let sinks = self.call_sites(&sensitive);
+        self.core.into_facts(sinks, assigns)
     }
 }
 
