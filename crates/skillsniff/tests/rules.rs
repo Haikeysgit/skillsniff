@@ -245,7 +245,7 @@ fn sink_and_source_severities() {
     assert_eq!(sink("reverse_shell"), Severity::Critical);
     assert_eq!(sink("eval"), Severity::High);
     assert_eq!(sink("sensitive_write"), Severity::High);
-    assert_eq!(sink("exec"), Severity::Medium);
+    assert_eq!(sink("exec"), Severity::Low);
     assert_eq!(sink("network"), Severity::Low);
     let source = |c: &str| sev("Source", &[("class", c)]);
     assert_eq!(source("secret_env"), Severity::Low);

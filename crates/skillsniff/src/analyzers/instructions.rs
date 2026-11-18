@@ -267,6 +267,9 @@ fn normalize(text: &str, strip_markup: bool) -> Norm {
     let mut lines: Vec<u32> = Vec::with_capacity(text.len());
     let mut line = 1u32;
     let mut i = 0;
+    // Offset of the next `-->`, found once so a flood of openers stays linear:
+    // `Some(None)` means there is none left.
+    let mut close: Option<Option<usize>> = None;
     let space = |chars: &mut Vec<char>, lines: &mut Vec<u32>, line: u32| {
         if chars.last().is_some_and(|&c| c != ' ') {
             chars.push(' ');
@@ -276,6 +279,22 @@ fn normalize(text: &str, strip_markup: bool) -> Norm {
     while i < text.len() {
         let rest = &text[i..];
         let Some(c) = rest.chars().next() else { break };
+        if strip_markup
+            && rest.starts_with("<!--")
+            && close.is_none_or(|c| c.is_some_and(|c| c < i + 4))
+        {
+            close = Some(text[i + 4..].find("-->").map(|p| i + 4 + p));
+        }
+        if strip_markup
+            && rest.starts_with("<!--")
+            && let Some(Some(end)) = close
+        {
+            let n = end + 3 - i;
+            line += rest[..n].matches('\n').count() as u32;
+            space(&mut chars, &mut lines, line);
+            i += n;
+            continue;
+        }
         if strip_markup
             && c == '<'
             && let Some(n) = tag_len(rest)
@@ -406,6 +425,11 @@ fn signal(pattern: &str, file: &str, line: u32, evidence: String) -> Signal {
     }
 }
 
+fn is_html(file: &str) -> bool {
+    let lower = file.to_ascii_lowercase();
+    lower.ends_with(".html") || lower.ends_with(".htm")
+}
+
 /// Returns false when the file was only partly checked.
 fn scan_file(
     file: &str,
@@ -418,7 +442,9 @@ fn scan_file(
     let (mut hits, mut complete) = find_hits(text, rules, deadline);
     for (line, inner) in html_comments(text) {
         let len = inner.chars().count();
-        if len > LONG_COMMENT_CHARS {
+        // A long comment in an HTML page is ordinary (licences, notes); in prose it
+        // is invisible when rendered.
+        if len > LONG_COMMENT_CHARS && !is_html(file) {
             hits.push(Hit {
                 pattern: "hidden_comment",
                 line,

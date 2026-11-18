@@ -137,10 +137,10 @@ rules:
     advice: Remove it, or obtain it from a source you trust and check its hash.
   - id: hidden.binary-asset
     severity: low
-    title: Image or font file
+    title: Image, font or document file
     signal: Hidden
-    where: {pattern: "binary_file", magic: "image|font"}
-    explain: The skill ships an image or font whose first bytes match that format. These are common, but their content was not analyzed.
+    where: {pattern: "binary_file", magic: "image|font|document"}
+    explain: The skill ships an image, font or PDF whose first bytes match that format. These are common, but their content was not analyzed.
     advice: No action needed for ordinary assets.
   - id: hidden.executable-binary
     severity: high
@@ -238,7 +238,7 @@ rules:
     explain: The code sends or fetches data over the network.
     advice: Check which hosts it talks to and what it sends.
   - id: exec.run-command
-    severity: medium
+    severity: low
     title: Runs a command
     signal: Sink
     where: {class: "exec"}

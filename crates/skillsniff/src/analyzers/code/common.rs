@@ -455,6 +455,17 @@ impl<'t> Core<'t> {
         });
     }
 
+    /// Forgets sources whose token lies inside one of the byte ranges.
+    pub fn drop_sources_within(&mut self, cuts: &[(usize, usize)]) {
+        let inside: HashSet<&str> = self
+            .tokens
+            .iter()
+            .filter(|t| cuts.iter().any(|&(s, e)| t.start >= s && t.end <= e))
+            .map(|t| t.name.as_str())
+            .collect();
+        self.sources.retain(|s| !inside.contains(s.id.as_str()));
+    }
+
     pub fn add_sensitive(&mut self, node: Node) {
         if self.sensitive.len() >= MAX_SITES {
             self.truncate();

@@ -1692,6 +1692,15 @@ impl<'t> Walk<'t> {
                 rhs_callee: None,
             });
         }
+        // A key named only as an identity option is read by the client, not
+        // handled by the script.
+        let cuts: Vec<(usize, usize)> = self
+            .cmds
+            .iter()
+            .chain(&self.extra)
+            .flat_map(|c| c.exclude.iter().map(|n| (n.start_byte(), n.end_byte())))
+            .collect();
+        self.core.drop_sources_within(&cuts);
         self.core.index_tokens();
         let network: Vec<String> = self
             .cmds

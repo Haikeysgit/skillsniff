@@ -278,9 +278,37 @@ fn scan_mixed_script(line: &str, file: &str, n: u32, out: &mut Vec<Signal>) {
     }
 }
 
+/// Whether byte `at` of the line lies inside a URL: a `://` earlier on the line
+/// with no space, quote or bracket between it and `at`.
+fn in_url(line: &str, at: usize) -> bool {
+    let Some(open) = line[..at].rfind("://") else {
+        return false;
+    };
+    !line[open..at].contains(|c: char| c.is_whitespace() || "\"'`<>()[]{}".contains(c))
+}
+
+/// A relative file path such as `schemas/shared-types` right before `.xsd`.
+fn is_file_path(tok: &str, after: &str) -> bool {
+    tok.contains('/')
+        && after
+            .strip_prefix('.')
+            .is_some_and(|r| r.starts_with(|c: char| c.is_ascii_alphabetic()))
+}
+
+/// A subresource-integrity value such as `sha384-...`.
+fn is_integrity_hash(tok: &str) -> bool {
+    ["sha256-", "sha384-", "sha512-"]
+        .iter()
+        .any(|p| tok.starts_with(p))
+}
+
 fn scan_entropy(line: &str, file: &str, n: u32, out: &mut Vec<Signal>) {
-    let emit = |tok: &str, out: &mut Vec<Signal>| {
-        if tok.len() < MIN_TOKEN_LEN {
+    let emit = |s: usize, tok: &str, out: &mut Vec<Signal>| {
+        if tok.len() < MIN_TOKEN_LEN
+            || in_url(line, s)
+            || is_integrity_hash(tok)
+            || is_file_path(tok, &line[s + tok.len()..])
+        {
             return;
         }
         let hex = tok.bytes().all(|b| b.is_ascii_hexdigit());
@@ -307,11 +335,11 @@ fn scan_entropy(line: &str, file: &str, n: u32, out: &mut Vec<Signal>) {
         if is_tok(b) {
             start.get_or_insert(i);
         } else if let Some(s) = start.take() {
-            emit(&line[s..i], out);
+            emit(s, &line[s..i], out);
         }
     }
     if let Some(s) = start {
-        emit(&line[s..], out);
+        emit(s, &line[s..], out);
     }
 }
 
@@ -341,6 +369,21 @@ fn split_lines(text: &str) -> Vec<&str> {
     lines
 }
 
+/// First invisible joiner in a line. A variation selector after a symbol, an
+/// emoji or a digit is ordinary emoji presentation; after a letter it hides.
+fn find_joiner(line: &str) -> Option<char> {
+    let mut prev: Option<char> = None;
+    for c in line.chars() {
+        let emoji_selector =
+            matches!(c, '\u{FE0E}' | '\u{FE0F}') && prev.is_some_and(|p| !p.is_alphabetic());
+        if is_joiner(c) && !emoji_selector {
+            return Some(c);
+        }
+        prev = Some(c);
+    }
+    None
+}
+
 fn scan_text(file: &str, text: &str, out: &mut Vec<Signal>) {
     for (idx, line) in split_lines(text).into_iter().enumerate() {
         let n = (idx + 1) as u32;
@@ -348,11 +391,13 @@ fn scan_text(file: &str, text: &str, out: &mut Vec<Signal>) {
             ("zero_width", is_zero_width as fn(char) -> bool),
             ("bidi_control", is_bidi),
             ("tag_chars", is_tag),
-            ("invisible_joiner", is_joiner),
         ] {
             if let Some(c) = line.chars().find(|&c| pred(c)) {
                 out.push(signal(pattern, file, n, describe(c)));
             }
+        }
+        if let Some(c) = find_joiner(line) {
+            out.push(signal("invisible_joiner", file, n, describe(c)));
         }
         if line.len() > MAX_LINE_BYTES {
             continue;
@@ -394,6 +439,8 @@ fn magic_class(head: &[u8]) -> &'static str {
         "image"
     } else if starts(b"wOFF") || starts(b"wOF2") || starts(&[0, 1, 0, 0]) || starts(b"OTTO") {
         "font"
+    } else if starts(b"%PDF-") {
+        "document"
     } else if starts(b"PK")
         || starts(&[0x1F, 0x8B])
         || starts(&[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C])
