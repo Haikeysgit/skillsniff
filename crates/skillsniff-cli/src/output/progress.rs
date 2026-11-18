@@ -167,6 +167,7 @@ impl TerminalProgress {
             };
             inner.settle(&line.bar, mark, style, &format!("{name}{result}"));
         }
+        inner.end_block();
     }
 
     /// Marks the scan as failed before any report exists.
@@ -180,10 +181,19 @@ impl TerminalProgress {
         for line in lines.iter() {
             line.bar.finish_and_clear();
         }
+        inner.end_block();
     }
 }
 
 impl Inner {
+    /// The progress block leaves the cursor at the end of its last line;
+    /// move past it so later output starts on a fresh line.
+    fn end_block(&self) {
+        if !self.multi.is_hidden() {
+            eprintln!();
+        }
+    }
+
     fn spinner(&self, message: &str) -> ProgressBar {
         let ticks: Vec<String> = SPINNER
             .iter()
