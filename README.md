@@ -139,6 +139,14 @@ Paste this into Claude Code or Codex:
 
 Your agent copies the skill, asks you once before installing the `skillsniff` program, and sets everything up. From then on it checks every skill before installing it, and you can type `/skillsniff` to check one.
 
+Or install the skill from a terminal with the [skills](https://github.com/vercel-labs/skills) tool (needs Node.js):
+
+```sh
+npx skills add Haikeysgit/skillsniff -g
+```
+
+The first time the skill runs, your agent installs the `skillsniff` program after asking you.
+
 In Claude Code you can also use the plugin system:
 
 ```text

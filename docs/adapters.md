@@ -8,6 +8,8 @@ The skill needs the `skillsniff` program. If it is missing, the skill's **Setup*
 
 > Install the skillsniff skill from https://github.com/Haikeysgit/skillsniff
 
+From a terminal: `npx skills add Haikeysgit/skillsniff -g`.
+
 In Claude Code you can also run `/plugin marketplace add Haikeysgit/skillsniff` and then `/plugin install skillsniff@skillsniff`.
 
 ## Install with the command
