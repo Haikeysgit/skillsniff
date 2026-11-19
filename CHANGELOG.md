@@ -4,6 +4,13 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-19
+
+### Changed
+
+- Asking your agent to install the skill now installs the `skillsniff` program too, without an extra question. winget is skipped until the package is published.
+- `skillsniff setup` installs this new version of the skill.
+
 ## [0.1.2] - 2026-11-19
 
 ### Added

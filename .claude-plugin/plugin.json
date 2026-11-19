@@ -1,7 +1,7 @@
 {
   "name": "skillsniff",
   "description": "Checks AI agent skills for hidden risks before your agent installs them.",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "author": { "name": "Haikeys" },
   "homepage": "https://github.com/Haikeysgit/skillsniff",
   "repository": "https://github.com/Haikeysgit/skillsniff",

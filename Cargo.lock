@@ -806,7 +806,7 @@ checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
 
 [[package]]
 name = "skillsniff"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "flate2",
  "insta",
@@ -829,7 +829,7 @@ dependencies = [
 
 [[package]]
 name = "skillsniff-cli"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "assert_cmd",
  "clap",
