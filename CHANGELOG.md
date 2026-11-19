@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Changed
+
+- `skillsniff setup` no longer replaces a newer skillsniff skill with the older copy built into the program. Skill text changes no longer need a release.
+- The README sentence to give your agent now names the program too, so agents install it without stopping to ask.
+
 ## [0.1.3] - 2026-11-19
 
 ### Changed

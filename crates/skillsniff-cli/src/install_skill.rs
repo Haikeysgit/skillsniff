@@ -88,6 +88,22 @@ fn written_by_us(existing: &str) -> bool {
         && existing.contains("skillsniff scan")
 }
 
+/// The number in the `<!-- skillsniff-skill-version: N -->` line, or 0 when
+/// the file has none (every skill written before versions existed).
+fn skill_version(text: &str) -> u32 {
+    text.lines()
+        .take(12)
+        .find_map(|l| {
+            l.trim()
+                .strip_prefix("<!-- skillsniff-skill-version:")?
+                .strip_suffix("-->")?
+                .trim()
+                .parse()
+                .ok()
+        })
+        .unwrap_or(0)
+}
+
 enum Outcome {
     Installed(PathBuf),
     Updated(PathBuf),
@@ -100,6 +116,14 @@ fn install_one(agent: Agent, base: &Path, force: bool) -> Result<Outcome, String
     let content = SKILL;
     let existed = match fs::read_to_string(&file) {
         Ok(existing) if existing == content => return Ok(Outcome::UpToDate(file)),
+        // A newer copy (for example one an agent fetched from GitHub) is kept.
+        Ok(existing)
+            if !force
+                && written_by_us(&existing)
+                && skill_version(&existing) > skill_version(content) =>
+        {
+            return Ok(Outcome::UpToDate(file));
+        }
         Ok(existing) if !force && !written_by_us(&existing) => {
             return Err(format!(
                 "{} already has a different skill at {}; rerun with --force to replace it",
