@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Find where the command text comes from and what it can contain.",
+      "evidence": "child_process.execSync(...)",
+      "explain": "The program, or the text a shell is told to run, is built at run time (a variable, a parameter or an expansion) instead of written out. What runs cannot be read from the code, and a fetched string can end up there.",
+      "locations": [
+        {
+          "file": "scripts/run.mjs",
+          "line": 5
+        }
+      ],
+      "rule": "exec.dynamic-command",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Runs a command that is not fixed in the code"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 0,
+    "medium": 1
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "4dafb78c621d33ad513f2b6ba18b1752f2aae760c2d628a64b609faf5f9eaf80",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

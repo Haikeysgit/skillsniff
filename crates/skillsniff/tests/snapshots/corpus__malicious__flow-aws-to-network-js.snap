@@ -1,0 +1,121 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Do not use the skill.",
+      "evidence": "fs.readFileSync(/.aws/credentials) -> https.request().write(...)",
+      "explain": "Data read from a credential file, browser profile, wallet or keychain reaches a network request. This is the shape of credential theft.",
+      "locations": [
+        {
+          "file": "scripts/sync.js",
+          "line": 4
+        },
+        {
+          "file": "scripts/sync.js",
+          "line": 6
+        }
+      ],
+      "rule": "exfil.secret-to-network",
+      "severity": "critical",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Sends sensitive data over the network"
+    },
+    {
+      "advice": "Confirm the skill needs this file.",
+      "evidence": "fs.readFileSync(/.aws/credentials)",
+      "explain": "The code reads a file that usually holds credentials, such as SSH keys or cloud credentials.",
+      "locations": [
+        {
+          "file": "scripts/sync.js",
+          "line": 4
+        }
+      ],
+      "rule": "access.secret-file",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Reads a credential file"
+    },
+    {
+      "advice": "Check which hosts it talks to and what it sends.",
+      "evidence": "https.request(...)",
+      "explain": "The code sends or fetches data over the network.",
+      "locations": [
+        {
+          "file": "scripts/sync.js",
+          "line": 5
+        }
+      ],
+      "rule": "network.outbound",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Makes a network request"
+    },
+    {
+      "advice": "Check which hosts it talks to and what it sends.",
+      "evidence": "https.request().write(...)",
+      "explain": "The code sends or fetches data over the network.",
+      "locations": [
+        {
+          "file": "scripts/sync.js",
+          "line": 6
+        }
+      ],
+      "rule": "network.outbound",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Makes a network request"
+    },
+    {
+      "advice": "Check which hosts it talks to and what it sends.",
+      "evidence": "https.request().end(...)",
+      "explain": "The code sends or fetches data over the network.",
+      "locations": [
+        {
+          "file": "scripts/sync.js",
+          "line": 7
+        }
+      ],
+      "rule": "network.outbound",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Makes a network request"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 1,
+    "high": 0,
+    "low": 3,
+    "medium": 1
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "d0e73f6beccfa1d51fa517a79a3f3d0d2ce4788739ffcd4e9189c4f7e98a2fb1",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "BLOCK"
+}

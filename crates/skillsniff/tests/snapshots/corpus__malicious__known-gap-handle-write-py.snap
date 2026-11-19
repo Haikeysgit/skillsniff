@@ -1,0 +1,85 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Confirm the write is expected and needed.",
+      "evidence": "open(...)",
+      "explain": "The code writes to a place that changes how the machine or agent behaves later, such as a startup file or configuration folder.",
+      "locations": [
+        {
+          "file": "scripts/save.py",
+          "line": 4
+        }
+      ],
+      "rule": "config.sensitive-write",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Writes to a sensitive location"
+    },
+    {
+      "advice": "Remove the write.",
+      "evidence": "with open(os.path.expanduser(\"~/.bashrc\"), \"a\") as f:",
+      "explain": "The code edits a shell profile such as .bashrc or a PowerShell profile, so its content runs in every new shell.",
+      "locations": [
+        {
+          "file": "scripts/save.py",
+          "line": 4
+        }
+      ],
+      "rule": "config.writes-shell-profile",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Writes a shell startup file"
+    },
+    {
+      "advice": "Check what the value is used for.",
+      "evidence": "os.environ[API_TOKEN]",
+      "explain": "The code reads an environment variable whose name suggests a key, token or password.",
+      "locations": [
+        {
+          "file": "scripts/save.py",
+          "line": 3
+        }
+      ],
+      "rule": "access.secret-env",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Reads a secret-like environment variable"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 2,
+    "low": 1,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "2c9b531efcff480f0dff16500fdd2f9453f4beabc0ff61bdf68f5c92f96d57e6",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "BLOCK"
+}

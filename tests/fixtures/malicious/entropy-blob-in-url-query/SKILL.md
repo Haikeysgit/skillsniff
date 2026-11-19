@@ -1,0 +1,8 @@
+---
+name: entropy-blob-in-url-query
+description: Lists links. Use when the user asks for links.
+---
+
+# Links
+
+See https://docs.example.invalid/page?data=ZWNobyBwd25lZDsgdHJ1ZSAjIGhhcm1sZXNzIGRlZmFuZ2VkIHRlc3QgdGV4dDogaHh4cDovLzE5Mi4wLjIuMS94LmludmFsaWQtc2FtcGxlLWJsb2ItMDEyMzQ1Njc4OQZWNobyBwd25lZDsgdHJ1ZSAjIGhhcm1sZXNzIGRlZmFuZ2VkIHRlc3QgdGV4dDogaHh4cDovLzE5Mi4wLjIuMS94LmludmFsaWQtc2FtcGxlLWJsb2ItMDEyMzQ1Njc4OQZWNobyBwd25lZDsgdHJ1ZSAjIGhhcm1sZXNzIGRlZmFuZ2VkIHRlc3QgdGV4dDogaHh4cDovLzE5Mi4wLjIuMS94LmludmFsaWQtc2FtcGxlLWJsb2ItMDEyMzQ1Njc4OQ

@@ -218,8 +218,11 @@ const SENSITIVE_WRITE_MARKERS: &[&str] = &[
     ".config/fish/config.fish",
     "/etc/profile",
     "powershell_profile.ps1",
-    ".claude/",
-    ".codex/",
+    ".claude/settings",
+    ".claude/hooks",
+    ".claude.json",
+    ".codex/config",
+    ".codex/hooks",
     "crontab",
     "/etc/cron",
     "/var/spool/cron",
@@ -254,6 +257,15 @@ fn has_dotenv(text: &str) -> bool {
     has_segment(text, ".env", |b| {
         b.is_none_or(|b| !(b.is_ascii_alphanumeric() || b == b'_'))
     })
+}
+
+/// Regular-expression text that names `.env` (`process.env|getenv(`): an escaped
+/// dot is not a path separator.
+fn is_regex_text(text: &str) -> bool {
+    text.contains("\\.env")
+        && ["\\(", "\\)", "\\[", "\\|", "\\+", "\\*", "\\?"]
+            .iter()
+            .any(|e| text.contains(e))
 }
 
 /// Whether `name` starts a path segment (after start, `/`, a quote, a space
@@ -465,7 +477,10 @@ pub fn invocation_class(prog: &str, args: &[&str]) -> Option<&'static str> {
 pub fn literal_source_class(text: &str) -> Option<&'static str> {
     let t = normalize_path(text);
     let lower = t.to_ascii_lowercase();
-    if SECRET_FILE_MARKERS.iter().any(|m| t.contains(m)) || has_dotenv(&t) || has_secret_dir(&t) {
+    if SECRET_FILE_MARKERS.iter().any(|m| t.contains(m))
+        || (has_dotenv(&t) && !is_regex_text(text))
+        || has_secret_dir(&t)
+    {
         return Some(SECRET_FILE);
     }
     if KEYCHAIN_MARKERS.iter().any(|m| t.contains(m)) {
@@ -491,12 +506,26 @@ fn is_browser_store(t: &str, lower: &str) -> bool {
 }
 
 /// Whether an environment variable name looks like it holds a secret.
+/// Suffixes of names that hold a folder or a label, not the secret itself.
+const ENV_NON_SECRET_SUFFIXES: &[&str] = &["_dir", "_name"];
+
+/// Suffixes of names that point at a file: the file is the secret.
+const ENV_FILE_SUFFIXES: &[&str] = &["_file", "_path"];
+
 pub fn env_class(name: &str) -> Option<&'static str> {
     let lower = name.to_ascii_lowercase();
-    SECRET_ENV_MARKERS
-        .iter()
-        .any(|m| lower.contains(m))
-        .then_some(SECRET_ENV)
+    if ENV_NON_SECRET_SUFFIXES.iter().any(|s| lower.ends_with(s)) {
+        return None;
+    }
+    if !SECRET_ENV_MARKERS.iter().any(|m| lower.contains(m)) {
+        return None;
+    }
+    // `AWS_SHARED_CREDENTIALS_FILE` names a credential file that the script
+    // then opens: it counts as one.
+    if ENV_FILE_SUFFIXES.iter().any(|s| lower.ends_with(s)) {
+        return Some(SECRET_FILE);
+    }
+    Some(SECRET_ENV)
 }
 
 /// Whether path text names a shell profile, agent config, cron or autostart

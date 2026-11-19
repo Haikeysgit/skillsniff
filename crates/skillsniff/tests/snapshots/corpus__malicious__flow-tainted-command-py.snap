@@ -1,0 +1,89 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Check what the command does with it.",
+      "evidence": "os.environ[API_TOKEN] -> os.system(...)",
+      "explain": "Data from a sensitive source is passed to a program or shell command.",
+      "locations": [
+        {
+          "file": "scripts/hello.py",
+          "line": 3
+        },
+        {
+          "file": "scripts/hello.py",
+          "line": 3
+        }
+      ],
+      "rule": "exec.tainted-command",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Sensitive data is passed to a command"
+    },
+    {
+      "advice": "Check what the value is used for.",
+      "evidence": "os.environ[API_TOKEN]",
+      "explain": "The code reads an environment variable whose name suggests a key, token or password.",
+      "locations": [
+        {
+          "file": "scripts/hello.py",
+          "line": 3
+        }
+      ],
+      "rule": "access.secret-env",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Reads a secret-like environment variable"
+    },
+    {
+      "advice": "Check the command and where its arguments come from.",
+      "evidence": "os.system(...)",
+      "explain": "The code starts another program or shell command.",
+      "locations": [
+        {
+          "file": "scripts/hello.py",
+          "line": 3
+        }
+      ],
+      "rule": "exec.run-command",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Runs a fixed command"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 2,
+    "medium": 1
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "3ad4f99b148d83864a64cbed523afcbf7dd35277c130f9a18d6489cc049d441d",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

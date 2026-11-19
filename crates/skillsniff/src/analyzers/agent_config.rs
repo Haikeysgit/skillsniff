@@ -34,6 +34,7 @@ pub const AGENT_CONFIG_TARGETS: &[&str] = &[
     "launch_agent",
     "windows_run_key",
     "git_hooks",
+    "agent_instructions",
     "suppression_file",
 ];
 
@@ -137,6 +138,19 @@ const SPECS: &[Spec] = &[
             "currentversion/run",
             "currentversion/runonce",
             "programs/startup",
+        ],
+        commands: &[],
+    },
+    Spec {
+        target: "agent_instructions",
+        paths: &[
+            "claude.md",
+            "claude.local.md",
+            "agents.md",
+            ".claude/commands",
+            ".claude/agents",
+            ".claude/skills",
+            ".codex/",
         ],
         commands: &[],
     },
@@ -542,11 +556,271 @@ enum Kind {
 }
 
 fn normalize_line(line: &str) -> String {
-    line.chars()
+    let flat: String = line
+        .chars()
         .filter(|&c| !is_invisible(c))
         .flat_map(char::to_lowercase)
         .map(|c| if c == '\\' { '/' } else { c })
-        .collect()
+        .collect();
+    collapse_slashes(&unwrap_join_path(&join_pieces(&flat)))
+}
+
+/// `(join-path $home ".claude/x.md")` as `".claude/x.md"`: the base is dropped
+/// so the quoted path stands where the write cmdlet expects its target.
+fn unwrap_join_path(line: &str) -> String {
+    let mut out = line.to_string();
+    for _ in 0..4 {
+        let Some(at) = out.find("(join-path ") else {
+            break;
+        };
+        let body = &out[at + "(join-path ".len()..];
+        let Some(close) = body.find(')') else {
+            break;
+        };
+        let inner = &body[..close];
+        let Some(q) = inner.find(['"', '\'']) else {
+            break;
+        };
+        let replaced = inner[q..].to_string();
+        let end = at + "(join-path ".len() + close + 1;
+        out.replace_range(at..end, &replaced);
+    }
+    out
+}
+
+/// Runs of `/` (from doubled `\` separators) as one, except in `://`.
+fn collapse_slashes(line: &str) -> String {
+    if !line.contains("//") {
+        return line.to_string();
+    }
+    let mut out = String::with_capacity(line.len());
+    let mut prev = '\0';
+    for c in line.chars() {
+        if c == '/' && prev == '/' && !out.ends_with("://") && !out.ends_with(":/") {
+            continue;
+        }
+        out.push(c);
+        prev = c;
+    }
+    out
+}
+
+/// Joins string pieces of a path built from parts: `"a", "b"` in a `join(`
+/// or `resolve(` call, `"a" / "b"` (pathlib), `"a").joinpath("b"`,
+/// `"a" + "b"` and `Join-Path $d "a" "b"`. The pieces become one string,
+/// `"a/b"`.
+fn join_pieces(line: &str) -> String {
+    let joins = line.contains("join(")
+        || line.contains("resolve(")
+        || line.contains("path(")
+        || line.contains("join-path");
+    let ws = line.contains("join-path");
+    let b: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut quote: Option<char> = None;
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        match quote {
+            None if c == '"' || c == '\'' => {
+                quote = Some(c);
+                out.push(c);
+                i += 1;
+            }
+            Some(q) if c == q => match piece_joiner(&b, i + 1, joins, ws) {
+                Some((next, sep)) => {
+                    out.push_str(sep);
+                    i = next;
+                }
+                None => {
+                    quote = None;
+                    out.push(c);
+                    i += 1;
+                }
+            },
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// After a closing quote: the text up to the next opening quote, when it only
+/// joins two path pieces. Returns the index after that quote and the
+/// separator to put between the pieces.
+fn piece_joiner(b: &[char], start: usize, joins: bool, ws: bool) -> Option<(usize, &'static str)> {
+    let skip = |mut j: usize| {
+        while b.get(j) == Some(&' ') {
+            j += 1;
+        }
+        j
+    };
+    let mut j = skip(start);
+    let had_space = j > start;
+    let sep = match *b.get(j)? {
+        ',' if joins => {
+            j += 1;
+            "/"
+        }
+        '/' => {
+            j += 1;
+            "/"
+        }
+        '+' => {
+            j += 1;
+            ""
+        }
+        ')' => {
+            j = skip(j + 1);
+            for want in ".joinpath(".chars() {
+                if b.get(j) != Some(&want) {
+                    return None;
+                }
+                j += 1;
+            }
+            "/"
+        }
+        '"' | '\'' if ws && had_space => "/",
+        _ => return None,
+    };
+    j = skip(j);
+    matches!(b.get(j)?, '"' | '\'').then_some((j + 1, sep))
+}
+
+/// Path words that make a variable worth folding into later lines.
+const PATH_WORDS: &[&str] = &[
+    ".claude",
+    ".codex",
+    ".gemini",
+    "claude",
+    "agents",
+    "commands",
+    "skills",
+    "settings",
+    "hooks",
+    ".mcp",
+    ".bash",
+    ".zsh",
+    ".profile",
+    "cron",
+    "launchagents",
+    ".git",
+];
+
+/// Whether `chars[at..]` starts with `name`.
+fn starts_with_at(chars: &[char], at: usize, name: &str) -> bool {
+    name.chars()
+        .enumerate()
+        .all(|(k, n)| chars.get(at + k) == Some(&n))
+}
+
+fn is_word(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Folds `d=.claude`, `d = ".claude"` and `$d = ".claude"` (assigned once, a
+/// short literal naming a configuration path) into the lines that use it as
+/// `$d`, `${d}` or a bare name outside quotes, so a path built from a
+/// variable is matched.
+fn fold_path_variables(lines: &mut [String]) {
+    let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+    let mut values: BTreeMap<String, String> = BTreeMap::new();
+    let segments = lines
+        .iter()
+        .flat_map(|l| l.split(';'))
+        .flat_map(|l| l.split("&&"));
+    for line in segments {
+        let t = line.trim();
+        let t = [
+            "export ", "const ", "let ", "var ", "local ", "declare ", "set ",
+        ]
+        .iter()
+        .find_map(|p| t.strip_prefix(p))
+        .unwrap_or(t);
+        let t = t.strip_prefix('$').unwrap_or(t);
+        let end = t.find(|c: char| !is_word(c)).unwrap_or(t.len());
+        if end == 0 {
+            continue;
+        }
+        let (name, rest) = t.split_at(end);
+        let Some(value) = rest
+            .trim_start()
+            .strip_prefix('=')
+            .filter(|v| !v.starts_with('='))
+        else {
+            continue;
+        };
+        *seen.entry(name.to_string()).or_default() += 1;
+        let value = value.trim().trim_end_matches(';').trim();
+        let value = value.trim_matches(|c| c == '"' || c == '\'');
+        if !value.is_empty()
+            && value.len() <= 64
+            && !value.contains(['$', '(', ' ', '"', '\'', '`', '{'])
+            && PATH_WORDS.iter().any(|w| value.contains(w))
+            && values.len() < 16
+        {
+            values.insert(name.to_string(), value.to_string());
+        }
+    }
+    values.retain(|name, _| seen.get(name) == Some(&1));
+    if values.is_empty() {
+        return;
+    }
+    for line in lines.iter_mut() {
+        for (name, value) in &values {
+            if !line.contains(name.as_str()) {
+                continue;
+            }
+            let chars: Vec<char> = line.chars().collect();
+            let len = name.chars().count();
+            let mut out = String::with_capacity(line.len());
+            let mut quote: Option<char> = None;
+            let mut i = 0;
+            while i < chars.len() {
+                let c = chars[i];
+                if let Some(q) = quote {
+                    if c == q {
+                        quote = None;
+                    }
+                } else if c == '"' || c == '\'' {
+                    quote = Some(c);
+                }
+                if c == '$' {
+                    let braced = chars.get(i + 1) == Some(&'{');
+                    let from = i + 1 + usize::from(braced);
+                    let end = from + len;
+                    if starts_with_at(&chars, from, name)
+                        && if braced {
+                            chars.get(end) == Some(&'}')
+                        } else {
+                            chars.get(end).is_none_or(|n| !is_word(*n))
+                        }
+                    {
+                        out.push_str(value);
+                        i = end + usize::from(braced);
+                        continue;
+                    }
+                } else if quote.is_none()
+                    && starts_with_at(&chars, i, name)
+                    && (i == 0 || !(is_word(chars[i - 1]) || matches!(chars[i - 1], '.' | '$')))
+                    && chars
+                        .get(i + len)
+                        .is_none_or(|n| !(is_word(*n) || matches!(n, '(' | '=' | '.')))
+                {
+                    out.push('"');
+                    out.push_str(value);
+                    out.push('"');
+                    i += len;
+                    continue;
+                }
+                out.push(c);
+                i += 1;
+            }
+            *line = join_pieces(&out);
+        }
+    }
 }
 
 /// Settings keys present in a JSON document.
@@ -703,10 +977,11 @@ fn scan_writes(text: &str, kind: Kind, deadline: Instant, hits: &mut Hits) -> Cu
     let ctx = if kind == Kind::Prose { "prose" } else { "code" };
     let mut cut = Cut::default();
     let raw: Vec<&str> = text.split('\n').collect();
-    let lines: Vec<String> = raw
+    let mut lines: Vec<String> = raw
         .iter()
         .map(|l| normalize_line(l.strip_suffix('\r').unwrap_or(l)))
         .collect();
+    fold_path_variables(&mut lines);
     let mut idx: Vec<Option<LineIdx>> = lines.iter().map(|_| None).collect();
     let mut vars: BTreeSet<(usize, String, &'static str)> = BTreeSet::new();
     for (i, line) in lines.iter().enumerate() {
@@ -743,8 +1018,11 @@ fn scan_writes(text: &str, kind: Kind, deadline: Instant, hits: &mut Hits) -> Cu
             let writes = if p == "core.hookspath" {
                 git_sets(line, a + p.len(), git_flags, kind == Kind::Prose)
             } else {
+                // Prose that merely mentions CLAUDE.md or a command folder is
+                // ordinary documentation: only a write target counts there.
                 is_write_target(line, ix, a)
                     || (kind == Kind::Prose
+                        && spec.target != "agent_instructions"
                         && *prose_verb.get_or_insert_with(|| has_strong_prose_verb(line)))
             };
             if !writes {

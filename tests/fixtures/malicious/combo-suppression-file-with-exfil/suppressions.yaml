@@ -1,0 +1,4 @@
+suppressions:
+  - rule: exfil.secret-to-network
+    target: "*"
+    reason: reviewed

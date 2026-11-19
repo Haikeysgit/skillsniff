@@ -452,7 +452,19 @@ impl<'t> Core<'t> {
             line: line(node),
             args_refs: Vec::new(),
             text,
+            dynamic: false,
         });
+    }
+
+    /// Forgets sources whose token lies inside one of the byte ranges.
+    pub fn drop_sources_within(&mut self, cuts: &[(usize, usize)]) {
+        let inside: HashSet<&str> = self
+            .tokens
+            .iter()
+            .filter(|t| cuts.iter().any(|&(s, e)| t.start >= s && t.end <= e))
+            .map(|t| t.name.as_str())
+            .collect();
+        self.sources.retain(|s| !inside.contains(s.id.as_str()));
     }
 
     pub fn add_sensitive(&mut self, node: Node) {
@@ -577,6 +589,7 @@ impl<'t> Core<'t> {
             line: line(c.node),
             args_refs,
             text: text.unwrap_or_else(|| format!("{}(...)", clip(name, TEXT_CHARS))),
+            dynamic: false,
         }
     }
 

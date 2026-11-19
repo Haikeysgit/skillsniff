@@ -1,0 +1,48 @@
+name: Reproducible build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "crates/**"
+      - "rust-toolchain.toml"
+      - ".github/workflows/reproducible.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reproducible-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  reproducible:
+    name: linux musl builds are identical
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build twice in clean containers
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          for run in 1 2; do
+            docker run --rm \
+              -v "$PWD":/src:ro \
+              -v "$PWD/out-$run":/out \
+              -e SOURCE_DATE_EPOCH \
+              -e CARGO_INCREMENTAL=0 \
+              rust:1-slim-bookworm bash -euxo pipefail -c '
+                apt-get update -qq && apt-get install -y -qq musl-tools >/dev/null
+                cp -r /src /build && cd /build
+                rustup target add x86_64-unknown-linux-musl
+                RUSTFLAGS="--remap-path-prefix=/build=/src --remap-path-prefix=/usr/local/cargo=/cargo" \
+                  cargo build --release --locked --target x86_64-unknown-linux-musl -p skillsniff-cli
+                cp target/x86_64-unknown-linux-musl/release/skillsniff /out/skillsniff
+              '
+          done
+          sha256sum out-1/skillsniff out-2/skillsniff
+          cmp out-1/skillsniff out-2/skillsniff

@@ -28,6 +28,9 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all
+      - name: Release performance check
+        if: runner.os == 'Linux'
+        run: cargo test --release -- --ignored
 
   deny:
     name: cargo deny
@@ -35,3 +38,64 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
+
+  determinism:
+    name: reports (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON((github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && '["ubuntu-latest","macos-latest","windows-latest"]' || '["ubuntu-latest","windows-latest"]') }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p skillsniff-cli
+      - name: Write reports
+        run: |
+          mkdir -p out
+          printf 'suppressions: []\n' > "$RUNNER_TEMP/empty-suppressions.yaml"
+          scan() {
+            # Exit codes 1 and 2 are verdicts, not failures.
+            ./target/release/skillsniff scan "$1" --json --quiet --offline \
+              --suppressions "$RUNNER_TEMP/empty-suppressions.yaml" > "out/$2.json" || [ $? -le 2 ]
+          }
+          scan tests/fixtures/malicious/exfil-aws exfil-aws
+          scan tests/fixtures/clean/minimal-skill minimal-skill
+          scan tests/fixtures/caution/broad-trigger broad-trigger
+          wc -c out/*.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reports-${{ matrix.os }}
+          path: out/*.json
+
+  determinism-compare:
+    name: reports are identical on every OS
+    needs: determinism
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: reports
+      - name: Compare byte for byte
+        run: |
+          ls reports
+          [ "$(ls reports | wc -l)" -ge 2 ] || { echo "need reports from at least two systems"; exit 1; }
+          status=0
+          for dir in reports/*/; do
+            for name in exfil-aws minimal-skill broad-trigger; do
+              [ -s "$dir$name.json" ] || { echo "missing or empty: $dir$name.json"; status=1; }
+            done
+          done
+          [ $status -eq 0 ] || exit 1
+          for name in exfil-aws minimal-skill broad-trigger; do
+            if [ "$(sha256sum reports/*/"$name".json | cut -d' ' -f1 | sort -u | wc -l)" -ne 1 ]; then
+              echo "reports for $name differ:"
+              sha256sum reports/*/"$name".json
+              status=1
+            fi
+          done
+          exit $status

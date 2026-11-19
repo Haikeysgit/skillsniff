@@ -1,0 +1,69 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Confirm the write is expected and needed.",
+      "evidence": "cp alias.txt /tmp/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd…",
+      "explain": "The code writes to a place that changes how the machine or agent behaves later, such as a startup file or configuration folder.",
+      "locations": [
+        {
+          "file": "scripts/alias.sh",
+          "line": 2
+        }
+      ],
+      "rule": "config.sensitive-write",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Writes to a sensitive location"
+    },
+    {
+      "advice": "Remove the write.",
+      "evidence": "cp alias.txt /tmp/dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd/ddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "explain": "The code edits a shell profile such as .bashrc or a PowerShell profile, so its content runs in every new shell.",
+      "locations": [
+        {
+          "file": "scripts/alias.sh",
+          "line": 2
+        }
+      ],
+      "rule": "config.writes-shell-profile",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Writes a shell startup file"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 2,
+    "low": 0,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "87f26094d4e2c89a8fc723732283156af8fe7362b1985d0370751adb4f8c81e4",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "BLOCK"
+}

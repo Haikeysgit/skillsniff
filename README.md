@@ -13,7 +13,7 @@ A security scanner for AI agent skills. Check a skill for hidden risks *before* 
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](#supported-platforms)
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-dea584)](https://www.rust-lang.org)
 
-[Why](#why-skillsniff) · [How it works](#how-it-works) · [What it catches](#what-it-catches) · [Roadmap](#roadmap) · [Design](docs/specs/2026-11-17-skillsniff-design.md) · [Security](SECURITY.md)
+[Why](#why-skillsniff) · [How it works](#how-it-works) · [What it catches](#what-it-catches) · [Roadmap](#roadmap) · [Design](docs/specs/2026-11-17-skillsniff-design.md) · [Known limits](docs/limits.md) · [Security](SECURITY.md)
 
 </div>
 
@@ -127,7 +127,50 @@ See the full [design specification](docs/specs/2026-11-17-skillsniff-design.md) 
 
 ## Status
 
-skillsniff is being designed and built in public. There is no release yet. Installation instructions will appear here with the first release.
+skillsniff is being designed and built in public. The commands in [Installation](#installation) work once the first release is published.
+
+## Installation
+
+Pick one. Each installs the `skillsniff` command.
+
+```sh
+# macOS and Linux (Homebrew)
+brew install Haikeysgit/skillsniff/skillsniff
+
+# Windows (winget)
+winget install Haikeysgit.skillsniff
+
+# Windows (Scoop)
+scoop bucket add skillsniff https://github.com/Haikeysgit/scoop-skillsniff
+scoop install skillsniff
+```
+
+Prefer a script? The installers below download the archive for your platform from the latest release.
+
+```sh
+# macOS and Linux
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/Haikeysgit/skillsniff/releases/latest/download/skillsniff-cli-installer.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/Haikeysgit/skillsniff/releases/latest/download/skillsniff-cli-installer.ps1 | iex"
+```
+
+You can also download an archive from the [releases page](https://github.com/Haikeysgit/skillsniff/releases) and put `skillsniff` on your `PATH`.
+
+### Verify a download
+
+Every archive is listed in `sha256.sum` and carries a signed build provenance attestation:
+
+```sh
+sha256sum --check --ignore-missing sha256.sum
+gh attestation verify <archive> --repo Haikeysgit/skillsniff
+```
+
+### Use it from your agent
+
+Install the adapter so your agent checks every skill before it installs it. In Claude Code or Codex, ask the agent to use `/skillsniff`, or copy the adapter folder by hand. See [docs/adapters.md](docs/adapters.md).
 
 ## Contributing
 

@@ -1,0 +1,3 @@
+verdict: CAUTION
+must_find:
+  - exfil.env-to-network

@@ -1,0 +1,69 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Do not use the skill.",
+      "evidence": "with open(path, \"w\") as f:",
+      "explain": "The code writes to the settings or instruction files of the agent, which changes how it behaves in later sessions.",
+      "locations": [
+        {
+          "file": "scripts/tune.py",
+          "line": 4
+        }
+      ],
+      "rule": "config.writes-agent-settings",
+      "severity": "critical",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Changes agent settings"
+    },
+    {
+      "advice": "Confirm the write is expected and needed.",
+      "evidence": "open(...)",
+      "explain": "The code writes to a place that changes how the machine or agent behaves later, such as a startup file or configuration folder.",
+      "locations": [
+        {
+          "file": "scripts/tune.py",
+          "line": 4
+        }
+      ],
+      "rule": "config.sensitive-write",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Writes to a sensitive location"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 1,
+    "high": 1,
+    "low": 0,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "ef32254a1fe9b0c9a065ca87bd2857529d31c2d2984a1b963f015c7457500383",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "BLOCK"
+}

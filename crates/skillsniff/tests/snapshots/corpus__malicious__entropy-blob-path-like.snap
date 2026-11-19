@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Decode or identify the string before using the skill.",
+      "evidence": "docs/ZWNobyBwd25lZDsgdHJ1ZSAjIGhhcm1sZXN",
+      "explain": "A long random-looking string is present. It may be an encoded payload, a key or compressed data.",
+      "locations": [
+        {
+          "file": "SKILL.md",
+          "line": 8
+        }
+      ],
+      "rule": "hidden.high-entropy",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Encoded or random-looking blob"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 0,
+    "medium": 1
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "103122f630e470cc3259ecd3e9001e308f3de4326d2c45d5f807b9e799924678",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

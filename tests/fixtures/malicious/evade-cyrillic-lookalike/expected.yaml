@@ -1,0 +1,4 @@
+verdict: CAUTION
+must_find:
+  - instructions.prompt-injection
+  - hidden.mixed-script

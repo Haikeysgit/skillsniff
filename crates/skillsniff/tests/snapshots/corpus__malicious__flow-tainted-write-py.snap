@@ -1,0 +1,105 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Confirm the write is expected and needed.",
+      "evidence": "pathlib.Path().write_text(...)",
+      "explain": "The code writes to a place that changes how the machine or agent behaves later, such as a startup file or configuration folder.",
+      "locations": [
+        {
+          "file": "scripts/save.py",
+          "line": 4
+        }
+      ],
+      "rule": "config.sensitive-write",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Writes to a sensitive location"
+    },
+    {
+      "advice": "Do not use the skill until the flow is explained.",
+      "evidence": "os.environ[API_TOKEN] -> pathlib.Path().write_text(...)",
+      "explain": "Data from a sensitive source is written to a startup or configuration location.",
+      "locations": [
+        {
+          "file": "scripts/save.py",
+          "line": 4
+        },
+        {
+          "file": "scripts/save.py",
+          "line": 4
+        }
+      ],
+      "rule": "config.tainted-write",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Sensitive data is written to a sensitive location"
+    },
+    {
+      "advice": "Remove the write.",
+      "evidence": "Path(os.path.expanduser(\"~/.zshrc\")).write_text(os.environ[\"API_TOKEN\"])",
+      "explain": "The code edits a shell profile such as .bashrc or a PowerShell profile, so its content runs in every new shell.",
+      "locations": [
+        {
+          "file": "scripts/save.py",
+          "line": 4
+        }
+      ],
+      "rule": "config.writes-shell-profile",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Writes a shell startup file"
+    },
+    {
+      "advice": "Check what the value is used for.",
+      "evidence": "os.environ[API_TOKEN]",
+      "explain": "The code reads an environment variable whose name suggests a key, token or password.",
+      "locations": [
+        {
+          "file": "scripts/save.py",
+          "line": 4
+        }
+      ],
+      "rule": "access.secret-env",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Reads a secret-like environment variable"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 3,
+    "low": 1,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "6e75a0c7ebb2320982a746e6678fca461cd57eaec4526c3a2f3d34593ae0c3d4",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "BLOCK"
+}

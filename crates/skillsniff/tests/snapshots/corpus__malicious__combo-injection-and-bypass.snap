@@ -1,0 +1,69 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Remove the passage. Approval prompts should stay under the user control.",
+      "evidence": "skip the permission prompt",
+      "explain": "The text asks the agent to act without confirmation, skip approval steps or disable safety checks.",
+      "locations": [
+        {
+          "file": "SKILL.md",
+          "line": 8
+        }
+      ],
+      "rule": "instructions.permission-bypass",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Asks the agent to skip permission prompts"
+    },
+    {
+      "advice": "Remove the passage. Do not install the skill unless its author explains it.",
+      "evidence": "ignore all previous instructions",
+      "explain": "The text tells the agent to ignore, replace or forget its earlier instructions or safety rules. Skills have no reason to do this.",
+      "locations": [
+        {
+          "file": "SKILL.md",
+          "line": 8
+        }
+      ],
+      "rule": "instructions.prompt-injection",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Text that tries to override the agent instructions"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 2,
+    "low": 0,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "54646d7a5a095e0e122398483da4e670727e28b0886115f24830138404502db4",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "BLOCK"
+}

@@ -76,29 +76,39 @@ pub fn acquire_github_with_token(
     let what = format!("{owner}/{repo}");
 
     let ref_name = git_ref.as_deref().unwrap_or("HEAD");
-    let url = format!(
-        "{}/repos/{owner}/{repo}/commits/{ref_name}",
-        api_base.trim_end_matches('/')
-    );
-    let mut body = get(
-        &agent,
-        &url,
-        Some("application/vnd.github.sha"),
-        token,
-        &what,
-        &allowed,
-    )?;
-    let mut text = Vec::new();
-    body.by_ref()
-        .take(MAX_SHA_BODY + 1)
-        .read_to_end(&mut text)
-        .map_err(|e| network(&format!("reading commit response failed: {e}")))?;
-    let sha = std::str::from_utf8(&text)
-        .ok()
-        .map(str::trim)
-        .filter(|t| t.len() == 40 && t.bytes().all(|b| b.is_ascii_hexdigit()))
-        .map(str::to_ascii_lowercase)
-        .ok_or_else(|| network("GitHub did not return a 40-character commit SHA"))?;
+    // A full commit SHA needs no lookup: skipping it saves an API request
+    // (unauthenticated callers get only 60 an hour), and the download
+    // answers 404 when the commit does not exist.
+    let pinned = (ref_name.len() == 40 && ref_name.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| ref_name.to_ascii_lowercase());
+    let sha = match pinned {
+        Some(sha) => sha,
+        None => {
+            let url = format!(
+                "{}/repos/{owner}/{repo}/commits/{ref_name}",
+                api_base.trim_end_matches('/')
+            );
+            let mut body = get(
+                &agent,
+                &url,
+                Some("application/vnd.github.sha"),
+                token,
+                &what,
+                &allowed,
+            )?;
+            let mut text = Vec::new();
+            body.by_ref()
+                .take(MAX_SHA_BODY + 1)
+                .read_to_end(&mut text)
+                .map_err(|e| network(&format!("reading commit response failed: {e}")))?;
+            std::str::from_utf8(&text)
+                .ok()
+                .map(str::trim)
+                .filter(|t| t.len() == 40 && t.bytes().all(|b| b.is_ascii_hexdigit()))
+                .map(str::to_ascii_lowercase)
+                .ok_or_else(|| network("GitHub did not return a 40-character commit SHA"))?
+        }
+    };
 
     let url = format!(
         "{}/{owner}/{repo}/tar.gz/{sha}",

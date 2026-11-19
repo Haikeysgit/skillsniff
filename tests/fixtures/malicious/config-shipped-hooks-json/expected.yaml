@@ -1,0 +1,4 @@
+verdict: BLOCK
+must_find:
+  - config.writes-hooks
+  - config.writes-agent-settings

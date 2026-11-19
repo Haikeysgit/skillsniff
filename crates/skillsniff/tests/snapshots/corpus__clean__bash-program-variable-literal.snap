@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Check the command and where its arguments come from.",
+      "evidence": "$SED_INPLACE 's/a/b/' index.html",
+      "explain": "The code starts another program or shell command.",
+      "locations": [
+        {
+          "file": "scripts/edit.sh",
+          "line": 3
+        }
+      ],
+      "rule": "exec.run-command",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Runs a fixed command"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 1,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "94a398a419c9d3fd97d1fc003da64013f151e9a5dc451e57d0cf0996f965c7d5",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "PASS"
+}

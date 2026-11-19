@@ -1,0 +1,69 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Remove it, or obtain it from a source you trust and check its hash.",
+      "evidence": "file content is binary",
+      "explain": "The skill ships a binary file that cannot be read as text and was not analyzed.",
+      "locations": [
+        {
+          "file": "scripts/run.sh",
+          "line": 0
+        }
+      ],
+      "rule": "hidden.binary-file",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Binary file"
+    },
+    {
+      "advice": "Do not run or load the file. Remove it or get a clean copy.",
+      "evidence": "script or instructions extension but binary content",
+      "explain": "A file named like a script or document contains binary data.",
+      "locations": [
+        {
+          "file": "scripts/run.sh",
+          "line": 0
+        }
+      ],
+      "rule": "hidden.extension-mismatch",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "File is not what its name says"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 0,
+    "medium": 2
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "ce159bfc3db4606cd4206b3b7be55fcb316247a39a1ceb7400b845abcbd452b7",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

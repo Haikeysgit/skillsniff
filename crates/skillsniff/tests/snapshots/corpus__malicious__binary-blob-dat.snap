@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Remove it, or obtain it from a source you trust and check its hash.",
+      "evidence": "file content is binary",
+      "explain": "The skill ships a binary file that cannot be read as text and was not analyzed.",
+      "locations": [
+        {
+          "file": "data/blob.dat",
+          "line": 0
+        }
+      ],
+      "rule": "hidden.binary-file",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Binary file"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 0,
+    "medium": 1
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "8a193add7b912a9a72d4d701a3a7f51467efa1e1af328bc2af129c693be1525c",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

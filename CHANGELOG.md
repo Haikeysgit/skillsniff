@@ -11,3 +11,5 @@ All notable changes to this project are documented here. The format follows [Kee
 - Project documentation: README, security policy, contributing guide and code of conduct.
 - Terminal experience design: block-letter banner, live progress and verdict card.
 - Phase 1 implementation plan.
+- Release pipeline: multi-platform archives, checksums, build provenance attestations, reproducible Linux build check, Homebrew formula, and winget and Scoop manifest templates.
+- Installation instructions and release guide.

@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "docs": { "command": "true", "args": ["https://mcp.example.invalid/start"] }
+  }
+}

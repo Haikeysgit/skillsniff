@@ -4,7 +4,7 @@
 //! document order; a second step resolves import aliases, classifies sites and
 //! turns byte ranges into the identifiers and site ids they reference.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use tree_sitter::{Language, Node, Query, Tree};
@@ -175,6 +175,26 @@ struct Extract<'t> {
     binops: Vec<Node<'t>>,
     subscripts: Vec<Node<'t>>,
     funcs: Vec<(String, usize)>,
+    /// Names assigned a string or list literal: candidates for folding.
+    /// Plain assignments of a name within one function (or the module):
+    /// how many, and the literal when the last one is a string or list.
+    consts: HashMap<(String, usize), (usize, Option<Node<'t>>)>,
+    /// Whether every plain assignment of a name gives an argv list (or a
+    /// list joined on with `+`) whose first item is a literal that is not a
+    /// shell.
+    argv_heads: HashMap<(String, usize), bool>,
+    /// Writes to a name that are not a plain `name = literal`: unpacking,
+    /// `:=`, `for`, `with ... as`, `import ... as`, item and slice
+    /// assignment, and calls such as `insert` or `clear` that can change the
+    /// first item of a list.
+    writes: HashSet<(String, usize)>,
+    /// `+=` on a name and `append`/`extend` calls: they cannot change the
+    /// first item of a list but they do change a string or a shell script.
+    grown: HashSet<(String, usize)>,
+    /// Names of functions that are used as values (`h = run`, `map(run, x)`).
+    escaped: HashSet<String>,
+    /// `globals()[...]`, `locals()` or `vars()` is written to somewhere.
+    scope_dynamic: bool,
 }
 
 impl<'t> Extract<'t> {
@@ -186,6 +206,12 @@ impl<'t> Extract<'t> {
             binops: Vec::new(),
             subscripts: Vec::new(),
             funcs: Vec::new(),
+            consts: HashMap::new(),
+            argv_heads: HashMap::new(),
+            writes: HashSet::new(),
+            grown: HashSet::new(),
+            escaped: HashSet::new(),
+            scope_dynamic: false,
         }
     }
 
@@ -274,7 +300,46 @@ impl<'t> Extract<'t> {
     /// First pass. Returns false when the time budget ran out.
     fn collect(&mut self, tree: &'t Tree) -> bool {
         let src = self.core.src;
+        self.find_escaped(tree.root_node());
         run_query(query(), tree, src, |kind, node| self.capture(kind, node))
+    }
+
+    /// Names that appear as a value rather than being called or defined.
+    fn find_escaped(&mut self, root: Node<'t>) {
+        let mut stack = vec![root];
+        let mut steps = 0usize;
+        while let Some(n) = stack.pop() {
+            steps += 1;
+            if steps > 3_000_000 {
+                break;
+            }
+            if n.kind() == "identifier"
+                && let Some(parent) = n.parent()
+            {
+                let is_field =
+                    |field: &str| parent.child_by_field_name(field).map(|f| f.id()) == Some(n.id());
+                let called = parent.kind() == "call" && is_field("function");
+                let defined = matches!(parent.kind(), "function_definition" | "class_definition")
+                    && is_field("name");
+                let keyword = parent.kind() == "keyword_argument" && is_field("name");
+                let member = parent.kind() == "attribute" && is_field("attribute");
+                if !called && !defined && !keyword && !member {
+                    self.escaped.insert(self.text(n).to_string());
+                }
+            }
+            let mut cursor = n.walk();
+            for c in n.named_children(&mut cursor) {
+                stack.push(c);
+            }
+        }
+    }
+
+    /// Notes the names a binding form writes, in the scope around it.
+    fn note_writes(&mut self, node: Node<'t>, names: Vec<String>) {
+        let scope = self.scope_of(node);
+        for name in names {
+            self.writes.insert((name, scope));
+        }
     }
 
     fn capture(&mut self, kind: &str, node: Node<'t>) {
@@ -310,15 +375,61 @@ impl<'t> Extract<'t> {
                     .child_by_field_name("function")
                     .and_then(|f| self.dotted(f, true));
                 let args = node.child_by_field_name("arguments");
+                if let Some((obj, method)) = callee.as_deref().and_then(|c| c.rsplit_once('.'))
+                    && !obj.contains(['.', '('])
+                {
+                    let key = (obj.to_string(), self.scope_of(node));
+                    match method {
+                        "append" | "extend" => {
+                            self.grown.insert(key);
+                        }
+                        "insert" | "clear" | "pop" | "remove" | "sort" | "reverse" | "update"
+                        | "setdefault" | "__setitem__" | "popitem" => {
+                            self.writes.insert(key);
+                        }
+                        _ => {}
+                    }
+                }
                 self.core.add_call(node, callee, args);
             }
             "assign" | "augassign" => {
                 let Some(left) = node.child_by_field_name("left") else {
                     return;
                 };
+                let left_text = self.text(left);
+                if ["globals(", "locals(", "vars("]
+                    .iter()
+                    .any(|f| left_text.starts_with(f))
+                {
+                    self.scope_dynamic = true;
+                }
+                if kind == "augassign" {
+                    let names = self.targets(left);
+                    let scope = self.scope_of(node);
+                    for name in names {
+                        self.grown.insert((name, scope));
+                    }
+                } else if left.kind() != "identifier" {
+                    let names = self.targets(left);
+                    self.note_writes(node, names);
+                }
                 if kind == "assign" && self.bind_pairs(left, node.child_by_field_name("right"), ln)
                 {
                     return;
+                }
+                if kind == "assign" && left.kind() == "identifier" {
+                    let literal = node
+                        .child_by_field_name("right")
+                        .filter(|r| matches!(r.kind(), "string" | "concatenated_string" | "list"));
+                    let key = (self.text(left).to_string(), self.scope_of(left));
+                    let fixed = node
+                        .child_by_field_name("right")
+                        .is_some_and(|r| self.literal_argv_head(r));
+                    let all = self.argv_heads.entry(key.clone()).or_insert(true);
+                    *all &= fixed;
+                    let entry = self.consts.entry(key).or_insert((0, None));
+                    entry.0 += 1;
+                    entry.1 = literal;
                 }
                 let targets = self.targets(left);
                 let before = self.core.binds.len();
@@ -335,6 +446,7 @@ impl<'t> Extract<'t> {
                     .child_by_field_name("name")
                     .map(|n| self.targets(n))
                     .unwrap_or_default();
+                self.note_writes(node, targets.clone());
                 self.bind(targets, node.child_by_field_name("value"), None, ln);
             }
             "for" => {
@@ -342,6 +454,7 @@ impl<'t> Extract<'t> {
                     .child_by_field_name("left")
                     .map(|n| self.targets(n))
                     .unwrap_or_default();
+                self.note_writes(node, targets.clone());
                 let end = (node.kind() == "for_in_clause").then(|| node.end_byte());
                 self.bind(targets, node.child_by_field_name("right"), end, ln);
             }
@@ -350,6 +463,7 @@ impl<'t> Extract<'t> {
                     .child_by_field_name("alias")
                     .map(|n| self.targets(n))
                     .unwrap_or_default();
+                self.note_writes(node, targets.clone());
                 let value = self.core.first_child(node);
                 self.bind(targets, value, None, ln);
             }
@@ -368,7 +482,19 @@ impl<'t> Extract<'t> {
                     self.bind(vec![name], Some(node), None, ln);
                 }
             }
-            "import" => self.import(node),
+            "import" => {
+                let mut names = Vec::new();
+                let mut stack = vec![node];
+                while let Some(n) = stack.pop() {
+                    if n.kind() == "identifier" {
+                        names.push(self.text(n).to_string());
+                    }
+                    let mut cursor = n.walk();
+                    stack.extend(n.named_children(&mut cursor));
+                }
+                self.note_writes(node, names);
+                self.import(node)
+            }
             _ => {}
         }
     }
@@ -694,6 +820,7 @@ impl<'t> Extract<'t> {
         let Some(first) = pos.first().copied() else {
             return false;
         };
+        let first = self.resolve(first);
         let shell_true = kw
             .iter()
             .any(|(k, v)| *k == "shell" && self.text(*v) == "True");
@@ -720,6 +847,235 @@ impl<'t> Extract<'t> {
         commands.iter().any(|t| pipes_download_to_shell(t))
     }
 
+    /// A list, or `[..] + x`, whose first item is a literal program that is
+    /// not a shell.
+    fn literal_argv_head(&self, node: Node<'t>) -> bool {
+        let mut n = node;
+        while n.kind() == "binary_operator"
+            && n.child_by_field_name("operator").map(|o| o.kind()) == Some("+")
+            && let Some(left) = n.child_by_field_name("left")
+        {
+            n = left;
+        }
+        n.kind() == "list"
+            && self
+                .core
+                .children(n)
+                .first()
+                .and_then(|p| self.command_text(*p))
+                .is_some_and(|t| {
+                    !t.contains(UNKNOWN_PIECE)
+                        && !SHELLS.contains(&t.as_str())
+                        && !is_posix_shell(&t)
+                })
+    }
+
+    /// Names of a function's parameters, in order (`""` for other kinds).
+    fn param_names(&self, params: Node<'t>) -> Vec<&'t str> {
+        self.core
+            .children(params)
+            .into_iter()
+            .filter_map(|p| match p.kind() {
+                "identifier" => Some(self.text(p)),
+                "typed_parameter" => self.core.first_child(p).map(|i| self.text(i)),
+                "default_parameter" | "typed_default_parameter" => {
+                    p.child_by_field_name("name").map(|i| self.text(i))
+                }
+                _ => Some(""),
+            })
+            .collect()
+    }
+
+    /// Whether an identifier is a parameter of the function around it.
+    fn is_param(&self, node: Node<'t>) -> bool {
+        let mut up = node.parent();
+        while let Some(n) = up {
+            if n.kind() == "function_definition" {
+                return n
+                    .child_by_field_name("parameters")
+                    .is_some_and(|p| self.param_names(p).contains(&self.text(node)));
+            }
+            up = n.parent();
+        }
+        false
+    }
+
+    /// Id of the function a node sits in, or 0 at module level.
+    fn scope_of(&self, node: Node<'t>) -> usize {
+        let mut up = node.parent();
+        while let Some(n) = up {
+            if n.kind() == "function_definition" {
+                return n.id() + 1;
+            }
+            up = n.parent();
+        }
+        0
+    }
+
+    /// The literal a name is assigned, when that is its only plain
+    /// assignment in the function around `node` (or, failing that, at module
+    /// level). `+=` and `.extend` keep the first item.
+    fn single_const(&self, node: Node<'t>) -> Option<Node<'t>> {
+        if self.scope_dynamic {
+            return None;
+        }
+        let name = self.text(node);
+        for scope in [self.scope_of(node), 0] {
+            let key = (name.to_string(), scope);
+            if let Some((n, lit)) = self.consts.get(&key) {
+                let lit = (*lit)?;
+                let list = lit.kind() == "list";
+                let grown = self.grown.contains(&key);
+                return (*n == 1 && !self.writes.contains(&key) && (list || !grown)).then_some(lit);
+            }
+        }
+        None
+    }
+
+    /// `node`, or the literal its name stands for.
+    fn resolve(&self, node: Node<'t>) -> Node<'t> {
+        if node.kind() == "identifier" {
+            return self.single_const(node).unwrap_or(node);
+        }
+        node
+    }
+
+    /// Whether the text of `node` is fully known.
+    fn is_literal(&self, node: Node<'t>) -> bool {
+        self.command_text(node)
+            .is_some_and(|t| !t.contains(UNKNOWN_PIECE))
+    }
+
+    /// Whether an exec call takes its program, or the text a shell runs,
+    /// from something that is not a literal.
+    fn exec_dynamic(&self, c: &Call<'t>, calls: &[Call<'t>]) -> bool {
+        let Some(args) = c.args else {
+            return false;
+        };
+        let (pos, kw) = self.arguments(args);
+        let Some(first) = pos.first().copied() else {
+            return false;
+        };
+        let shell_true = kw
+            .iter()
+            .any(|(k, v)| *k == "shell" && self.text(*v) == "True");
+        !self.fixed(first, shell_true, calls, 0)
+    }
+
+    /// Whether the command given to an exec call is known: a literal string
+    /// for a shell, else an argv list whose program is a literal and that
+    /// does not hand a computed string to a shell interpreter. A parameter
+    /// of the enclosing function is known when every call of that function
+    /// in the file passes a known command.
+    fn fixed(&self, node: Node<'t>, shell: bool, calls: &[Call<'t>], depth: usize) -> bool {
+        if !shell
+            && node.kind() == "identifier"
+            && !self.is_param(node)
+            && !self.scope_dynamic
+            && [self.scope_of(node), 0].iter().find_map(|sc| {
+                let key = (self.text(node).to_string(), *sc);
+                self.argv_heads
+                    .get(&key)
+                    .copied()
+                    .map(|ok| ok && !self.writes.contains(&key))
+            }) == Some(true)
+        {
+            return true;
+        }
+        let ident_key = (node.kind() == "identifier")
+            .then(|| (self.text(node).to_string(), self.scope_of(node)));
+        let mut node = self.resolve(node);
+        // `["soffice"] + args`: the program is the first item on the left.
+        while node.kind() == "binary_operator"
+            && node.child_by_field_name("operator").map(|o| o.kind()) == Some("+")
+            && !shell
+            && let Some(left) = node.child_by_field_name("left")
+        {
+            node = self.resolve(left);
+        }
+        if shell {
+            return self.is_literal(node) || self.passed_fixed(node, shell, calls, depth);
+        }
+        if node.kind() == "list" {
+            let items = self.core.children(node);
+            let Some(prog) = items.first() else {
+                return true;
+            };
+            let Some(prog_text) = self
+                .command_text(*prog)
+                .filter(|t| !t.contains(UNKNOWN_PIECE))
+            else {
+                return false;
+            };
+            let shell_prog = SHELLS.contains(&prog_text.as_str()) || is_posix_shell(&prog_text);
+            let flag = items
+                .iter()
+                .any(|n| self.command_text(*n).is_some_and(|t| is_shell_flag(&t)));
+            let grown = ident_key
+                .as_ref()
+                .is_some_and(|k| self.grown.contains(k) || self.writes.contains(k));
+            return !(shell_prog && flag && (grown || items.iter().any(|n| !self.is_literal(*n))));
+        }
+        self.is_literal(node) || self.passed_fixed(node, shell, calls, depth)
+    }
+
+    /// `node` is a parameter of its function and every call of that function
+    /// in the file passes a known command.
+    fn passed_fixed(&self, node: Node<'t>, shell: bool, calls: &[Call<'t>], depth: usize) -> bool {
+        if node.kind() != "identifier" || depth >= 3 {
+            return false;
+        }
+        let name = self.text(node);
+        let mut up = node.parent();
+        while let Some(n) = up {
+            if n.kind() == "function_definition" {
+                break;
+            }
+            up = n.parent();
+        }
+        let Some(func) = up else {
+            return false;
+        };
+        let (Some(fname), Some(params)) = (
+            func.child_by_field_name("name").map(|f| self.text(f)),
+            func.child_by_field_name("parameters"),
+        ) else {
+            return false;
+        };
+        if self.escaped.contains(fname) || self.scope_dynamic {
+            return false;
+        }
+        let names = self.param_names(params);
+        let Some(at) = names.iter().position(|p| *p == name) else {
+            return false;
+        };
+        let mut seen = false;
+        for call in calls.iter().filter(|c| {
+            c.callee
+                .as_deref()
+                .is_some_and(|k| k == fname || k.strip_prefix("self.") == Some(fname))
+                && !(func.start_byte() <= c.node.start_byte()
+                    && c.node.end_byte() <= func.end_byte())
+        }) {
+            let Some(args) = call.args else {
+                return false;
+            };
+            let (pos, kw) = self.arguments(args);
+            let arg = pos
+                .get(at)
+                .copied()
+                .or_else(|| kw.iter().find(|(k, _)| *k == name).map(|(_, v)| *v));
+            let Some(arg) = arg else {
+                continue;
+            };
+            seen = true;
+            if !self.fixed(arg, shell, calls, depth + 1) {
+                return false;
+            }
+        }
+        seen
+    }
+
     /// Text of a command built from string literals and `+`. Other pieces
     /// stand in as an unknown character. `None` when no literal is involved.
     fn command_text(&self, node: Node<'t>) -> Option<String> {
@@ -737,6 +1093,17 @@ impl<'t> Extract<'t> {
                 "string" => {
                     literal = true;
                     out.push_str(string_content(self.text(n)));
+                    if self
+                        .core
+                        .children(n)
+                        .iter()
+                        .any(|c| c.kind() == "interpolation")
+                    {
+                        out.push(UNKNOWN_PIECE);
+                    }
+                }
+                "identifier" if self.single_const(n).is_some_and(|c| c.kind() != "list") => {
+                    stack.extend(self.single_const(n));
                 }
                 "concatenated_string" | "parenthesized_expression" => {
                     stack.extend(self.core.children_upto(n, MAX_FOLD_NODES).into_iter().rev());
@@ -778,8 +1145,12 @@ impl<'t> Extract<'t> {
                     .then_some(SENSITIVE_WRITE),
             };
             let Some(class) = class else { continue };
-            self.core
-                .push_sink(&mut sinks, || self.core.sink(c, name, class, None));
+            let dynamic = class == EXEC && self.exec_dynamic(c, &calls);
+            self.core.push_sink(&mut sinks, || {
+                let mut site = self.core.sink(c, name, class, None);
+                site.dynamic = dynamic;
+                site
+            });
         }
         if let (true, Some(i)) = (connect, first_dup) {
             let c = &calls[i];

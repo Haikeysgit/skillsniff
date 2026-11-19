@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Replace the link with the real file, or remove it, before using the skill.",
+      "evidence": "symlink notes.txt -> ../../outside.txt",
+      "explain": "The source contains a symbolic link. Links can point outside the skill so that a later read or copy touches files that are not part of it. The link was not followed or extracted.",
+      "locations": [
+        {
+          "file": "notes.txt",
+          "line": 0
+        }
+      ],
+      "rule": "inventory.symlink",
+      "severity": "high",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Symbolic link in the skill"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 1,
+    "low": 0,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "12249ca831fb6e5fa8b0e9dd0daad16e432ec154a8ca2ab4a573f7441d50a326",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

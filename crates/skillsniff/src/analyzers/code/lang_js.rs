@@ -10,7 +10,7 @@
 //! (`#s1`, `#c1`, `#p1`), so they are rewritten to `%field`, which is neither
 //! a site id nor a valid JavaScript identifier.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use tree_sitter::{Language, Node, Query, Tree};
@@ -364,6 +364,12 @@ struct Extract<'t> {
     callback_firsts: Vec<(usize, String, (usize, usize))>,
     /// Names bound to a value (not a function) anywhere in the file.
     value_names: HashSet<String>,
+    /// Names declared with a plain string literal: candidates for folding.
+    consts: HashMap<String, Node<'t>>,
+    /// For a name declared in more than one scope: the scopes that declare it
+    /// (byte ranges). Such a name is qualified by its innermost scope, so
+    /// unrelated bindings of one name stay apart.
+    scoped: HashMap<String, Vec<(usize, usize)>>,
 }
 
 impl<'t> Extract<'t> {
@@ -378,6 +384,8 @@ impl<'t> Extract<'t> {
             fn_names: HashSet::new(),
             callback_firsts: Vec::new(),
             value_names: HashSet::new(),
+            consts: HashMap::new(),
+            scoped: HashMap::new(),
         }
     }
 
@@ -584,7 +592,7 @@ impl<'t> Extract<'t> {
             }
             match n.kind() {
                 "identifier" | "shorthand_property_identifier_pattern" => {
-                    out.push(self.text(n).to_string());
+                    out.push(self.qualified(n));
                 }
                 "member_expression" | "subscript_expression" => match self.dotted(n, false) {
                     Some(d) => out.push(d),
@@ -629,16 +637,122 @@ impl<'t> Extract<'t> {
             .add_alias(local, strip_global(full).to_string(), alias_relevant);
     }
 
+    /// Name of an identifier node, qualified by its scope when the file
+    /// declares that name in several scopes.
+    fn qualified(&self, node: Node) -> String {
+        let name = self.text(node);
+        let Some(scopes) = self.scoped.get(name) else {
+            return name.to_string();
+        };
+        let at = node.start_byte();
+        scopes
+            .iter()
+            .filter(|(s, e)| *s <= at && at < *e)
+            .min_by_key(|(s, e)| e - s)
+            .map_or_else(|| name.to_string(), |(s, _)| format!("{name}@{s}"))
+    }
+
+    /// Finds where each name is declared: parameters (to their function),
+    /// `catch` parameters, `for (const x of ...)` bindings, `let` and `const`
+    /// (to their block) and `var` (to their function); the top level is
+    /// global. A name declared in more than one place gets its scopes noted.
+    fn build_scopes(&mut self, root: Node<'t>) {
+        type Range = (usize, usize);
+        let mut decls: HashMap<String, HashSet<Option<Range>>> = HashMap::new();
+        let mut stack: Vec<(Node<'t>, Option<Range>, Option<Range>)> = vec![(root, None, None)];
+        let mut steps = 0usize;
+        while let Some((n, block, func)) = stack.pop() {
+            steps += 1;
+            if steps > 3_000_000 {
+                break;
+            }
+            let range = (n.start_byte(), n.end_byte());
+            let (mut block2, mut func2) = (block, func);
+            let mut found: Vec<(Vec<String>, Option<Range>)> = Vec::new();
+            match n.kind() {
+                "arrow_function"
+                | "function_expression"
+                | "function_declaration"
+                | "generator_function"
+                | "generator_function_declaration"
+                | "method_definition" => {
+                    for p in [
+                        n.child_by_field_name("parameters"),
+                        n.child_by_field_name("parameter"),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        found.push((self.targets(p), Some(range)));
+                    }
+                    func2 = Some(range);
+                }
+                "catch_clause" => {
+                    if let Some(p) = n.child_by_field_name("parameter") {
+                        found.push((self.targets(p), Some(range)));
+                    }
+                }
+                "statement_block" | "for_statement" => block2 = Some(range),
+                "for_in_statement" => {
+                    block2 = Some(range);
+                    let mut cursor = n.walk();
+                    let kind = n
+                        .children(&mut cursor)
+                        .find(|c| matches!(c.kind(), "let" | "const" | "var"))
+                        .map(|c| c.kind());
+                    if let (Some(kind), Some(left)) = (kind, n.child_by_field_name("left")) {
+                        let scope = if kind == "var" { func } else { Some(range) };
+                        found.push((self.targets(left), scope));
+                    }
+                }
+                "lexical_declaration" | "variable_declaration" => {
+                    let scope = if n.kind() == "lexical_declaration" {
+                        block
+                    } else {
+                        func
+                    };
+                    let mut cursor = n.walk();
+                    for d in n.named_children(&mut cursor) {
+                        if d.kind() == "variable_declarator"
+                            && let Some(name) = d.child_by_field_name("name")
+                        {
+                            found.push((self.targets(name), scope));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            for (names, scope) in found {
+                for name in names {
+                    decls.entry(name).or_default().insert(scope);
+                }
+            }
+            let mut cursor = n.walk();
+            for c in n.named_children(&mut cursor) {
+                stack.push((c, block2, func2));
+            }
+        }
+        for (name, scopes) in decls {
+            if scopes.len() > 1 {
+                let ranges: Vec<Range> = scopes.into_iter().flatten().collect();
+                if !ranges.is_empty() {
+                    self.scoped.insert(name, ranges);
+                }
+            }
+        }
+    }
+
     /// First pass. Returns false when the time budget ran out.
     fn collect(&mut self, tree: &'t Tree, query: &Query) -> bool {
         let src = self.core.src;
+        self.build_scopes(tree.root_node());
         run_query(query, tree, src, |kind, node| self.capture(kind, node))
     }
 
     fn capture(&mut self, kind: &str, node: Node<'t>) {
         let ln = line(node);
         match kind {
-            "ident" => self.core.token(node, self.text(node).to_string(), true),
+            "ident" => self.core.token(node, self.qualified(node), true),
             "member" => {
                 self.members.push(node);
                 if let Some(d) = self.dotted(node, false) {
@@ -849,6 +963,9 @@ impl<'t> Extract<'t> {
             )
         {
             self.fn_names.insert(self.text(name).to_string());
+        }
+        if name.kind() == "identifier" && value.kind() == "string" {
+            self.consts.insert(self.qualified(name), value);
         }
         for full in self.module_paths(value) {
             self.alias_pattern(name, &full);
@@ -1235,6 +1352,61 @@ impl<'t> Extract<'t> {
         matches!(n.kind(), "string" | "template_string")
     }
 
+    /// The string literal a name is declared with, when it is bound once.
+    fn single_const(&self, node: Node<'t>) -> Option<Node<'t>> {
+        let name = self.qualified(node);
+        let c = *self.consts.get(&name)?;
+        let n = self
+            .core
+            .binds
+            .iter()
+            .filter(|b| b.targets.contains(&name))
+            .count();
+        (n == 1).then_some(c)
+    }
+
+    /// Whether the text of `node` is fully known.
+    fn is_literal(&self, node: Node<'t>) -> bool {
+        self.command_text(node)
+            .is_some_and(|t| !t.contains(UNKNOWN_PIECE))
+    }
+
+    /// Whether an exec call takes its program, or the text a shell runs,
+    /// from something that is not a literal.
+    fn exec_dynamic(&self, c: &Call<'t>, name: &str) -> bool {
+        let Some(args) = c.args else {
+            return false;
+        };
+        if args.kind() == "template_string" {
+            return !self.is_literal(args);
+        }
+        let pos = self.positional(args);
+        let Some(first) = pos.first().copied() else {
+            return false;
+        };
+        if matches!(last_segment(name), "exec" | "execSync") || self.shell_option(&pos) {
+            return !self.is_literal(first);
+        }
+        let Some(prog) = self
+            .command_text(first)
+            .filter(|t| !t.contains(UNKNOWN_PIECE))
+        else {
+            return true;
+        };
+        let words = self.argv(c);
+        let shell = words.first().is_some_and(|p| is_shell_program(p)) || is_shell_program(&prog);
+        shell
+            && pos
+                .get(1)
+                .filter(|a| a.kind() == "array")
+                .is_some_and(|arr| {
+                    self.core
+                        .children(*arr)
+                        .into_iter()
+                        .any(|n| !self.is_literal(n))
+                })
+    }
+
     /// Text of a command built from string and template literals and `+`.
     /// Other pieces stand in as an unknown character. `None` when no literal
     /// is involved.
@@ -1255,6 +1427,9 @@ impl<'t> Extract<'t> {
                     out.push_str(string_content(self.text(n)));
                 }
                 "string_fragment" | "escape_sequence" => out.push_str(self.text(n)),
+                "identifier" if self.single_const(n).is_some() => {
+                    stack.extend(self.single_const(n));
+                }
                 "template_string" => {
                     literal = true;
                     stack.extend(self.core.children_upto(n, MAX_FOLD_NODES).into_iter().rev());
@@ -1423,8 +1598,12 @@ impl<'t> Extract<'t> {
             }
             let text = (c.node.kind() == "new_expression")
                 .then(|| format!("new {}(...)", clip(name, TEXT_CHARS)));
-            self.core
-                .push_sink(&mut sinks, || self.core.sink(c, name, class, text));
+            let dynamic = class == EXEC && self.exec_dynamic(c, name);
+            self.core.push_sink(&mut sinks, || {
+                let mut site = self.core.sink(c, name, class, text);
+                site.dynamic = dynamic;
+                site
+            });
         }
         if let (true, true, Some(i)) = (connect, pipe, shell_spawn) {
             let c = &calls[i];

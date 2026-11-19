@@ -1,0 +1,69 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Do not use the skill.",
+      "evidence": "eval(...)",
+      "explain": "The code fetches content from the network and executes it, so what runs is not what was reviewed.",
+      "locations": [
+        {
+          "file": "scripts/update.js",
+          "line": 5
+        }
+      ],
+      "rule": "exec.download-and-run",
+      "severity": "critical",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Downloads code and runs it"
+    },
+    {
+      "advice": "Check which hosts it talks to and what it sends.",
+      "evidence": "https.get(...)",
+      "explain": "The code sends or fetches data over the network.",
+      "locations": [
+        {
+          "file": "scripts/update.js",
+          "line": 2
+        }
+      ],
+      "rule": "network.outbound",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Makes a network request"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 1,
+    "high": 0,
+    "low": 1,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "bfd423157997f27d334849c0ae0ca0e84ffbff10eff2f123017476f196366b05",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "BLOCK"
+}

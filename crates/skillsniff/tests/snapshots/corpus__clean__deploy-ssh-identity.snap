@@ -1,0 +1,69 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Check which hosts it talks to and what it sends.",
+      "evidence": "rsync -az -e \"ssh -i $HOME/.ssh/deploy_key\" ./site/ deploy@staging.example.inva…",
+      "explain": "The code sends or fetches data over the network.",
+      "locations": [
+        {
+          "file": "scripts/deploy.sh",
+          "line": 3
+        }
+      ],
+      "rule": "network.outbound",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Makes a network request"
+    },
+    {
+      "advice": "Check which hosts it talks to and what it sends.",
+      "evidence": "ssh -i \"$HOME/.ssh/deploy_key\" deploy@staging.example.invalid \"systemctl reload…",
+      "explain": "The code sends or fetches data over the network.",
+      "locations": [
+        {
+          "file": "scripts/deploy.sh",
+          "line": 4
+        }
+      ],
+      "rule": "network.outbound",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Makes a network request"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 2,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "a74cbc463e58a0502c4a67a731726f07ce415be2534b225bb459234e5068de4f",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "PASS"
+}

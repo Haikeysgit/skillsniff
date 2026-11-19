@@ -1,0 +1,4 @@
+verdict: BLOCK
+must_find:
+  - instructions.prompt-injection
+  - instructions.permission-bypass

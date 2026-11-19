@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Remove the characters unless the text needs them.",
+      "evidence": "U+00AD CHARACTER",
+      "explain": "The file contains invisible joiners, variation selectors or similar marks that change nothing on screen but can split or disguise words.",
+      "locations": [
+        {
+          "file": "SKILL.md",
+          "line": 8
+        }
+      ],
+      "rule": "hidden.invisible-joiner",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Invisible formatting characters"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 0,
+    "high": 0,
+    "low": 0,
+    "medium": 1
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "03cb93338a0bd88dd1d8eecb9ecf772ca639e08ac08392d7c16f7e424286d2bf",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "CAUTION"
+}

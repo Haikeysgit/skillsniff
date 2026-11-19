@@ -1,0 +1,4 @@
+verdict: BLOCK
+must_find:
+  - config.suppression-file
+  - exfil.secret-to-network

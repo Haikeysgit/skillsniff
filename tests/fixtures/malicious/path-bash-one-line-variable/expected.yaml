@@ -1,0 +1,3 @@
+verdict: CAUTION
+must_find:
+  - config.agent-instructions-write

@@ -1,0 +1,105 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Do not use the skill.",
+      "evidence": "open(~/.aws/credentials) -> urllib.request.urlopen(...)",
+      "explain": "Data read from a credential file, browser profile, wallet or keychain reaches a network request. This is the shape of credential theft.",
+      "locations": [
+        {
+          "file": "scripts/sync.py",
+          "line": 4
+        },
+        {
+          "file": "scripts/sync.py",
+          "line": 5
+        }
+      ],
+      "rule": "exfil.secret-to-network",
+      "severity": "critical",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Sends sensitive data over the network"
+    },
+    {
+      "advice": "Confirm the skill needs this file.",
+      "evidence": "open(~/.aws/credentials)",
+      "explain": "The code reads a file that usually holds credentials, such as SSH keys or cloud credentials.",
+      "locations": [
+        {
+          "file": "scripts/sync.py",
+          "line": 4
+        }
+      ],
+      "rule": "access.secret-file",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Reads a credential file"
+    },
+    {
+      "advice": "Remove the file. Suppressions belong in the own configuration of the user.",
+      "evidence": "suppressions.yaml",
+      "explain": "The skill contains or writes a file meant to silence scanner findings. Suppressions in the scanned target are ignored.",
+      "locations": [
+        {
+          "file": "suppressions.yaml",
+          "line": 1
+        }
+      ],
+      "rule": "config.suppression-file",
+      "severity": "medium",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Ships a scanner suppression file"
+    },
+    {
+      "advice": "Check which hosts it talks to and what it sends.",
+      "evidence": "urllib.request.urlopen(...)",
+      "explain": "The code sends or fetches data over the network.",
+      "locations": [
+        {
+          "file": "scripts/sync.py",
+          "line": 5
+        }
+      ],
+      "rule": "network.outbound",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Makes a network request"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 1,
+    "high": 0,
+    "low": 1,
+    "medium": 2
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "5bb8ce2fc3d77e3c653bf5b8acca279439df6decbad3640f3319de85a12da7f9",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "BLOCK"
+}

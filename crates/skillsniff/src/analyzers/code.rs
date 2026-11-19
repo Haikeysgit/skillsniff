@@ -176,11 +176,25 @@ fn file_signals(file: &str, lang: &str, facts: &Facts, flows: &[Flow], out: &mut
     sites.sort_by(|a, b| {
         (a.0, a.1.line, &a.1.class, &a.1.text).cmp(&(b.0, b.1.line, &b.1.class, &b.1.text))
     });
+    let dynamic_sites: BTreeSet<(u32, &str, &str)> = facts
+        .sinks
+        .iter()
+        .filter(|o| o.dynamic)
+        .map(|o| (o.line, o.class.as_str(), o.text.as_str()))
+        .collect();
     for (kind, s) in sites {
         if seen.insert((kind, s.line, s.class.as_str(), s.text.as_str())) {
+            let mut fields = vec![("class", s.class.as_str()), ("lang", lang)];
+            // Repeats of one site (one per meaning of a name) merge; the
+            // merged site is dynamic when any of them is.
+            let dynamic = s.class == "exec"
+                && dynamic_sites.contains(&(s.line, s.class.as_str(), s.text.as_str()));
+            if dynamic {
+                fields.push(("dynamic", "true"));
+            }
             out.push(signal(
                 kind,
-                &[("class", &s.class), ("lang", lang)],
+                &fields,
                 vec![at(file, s.line)],
                 &clip(&s.text, EVIDENCE_PART_CHARS),
             ));

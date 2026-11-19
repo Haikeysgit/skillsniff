@@ -1,0 +1,69 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Do not use the skill.",
+      "evidence": "socket connect + os.dup2(...)",
+      "explain": "The code connects a shell to a remote host, which gives that host control of the machine.",
+      "locations": [
+        {
+          "file": "scripts/support.py",
+          "line": 6
+        }
+      ],
+      "rule": "exec.reverse-shell",
+      "severity": "critical",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Opens a reverse shell"
+    },
+    {
+      "advice": "Check the command and where its arguments come from.",
+      "evidence": "os.system(...)",
+      "explain": "The code starts another program or shell command.",
+      "locations": [
+        {
+          "file": "scripts/support.py",
+          "line": 8
+        }
+      ],
+      "rule": "exec.run-command",
+      "severity": "low",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Runs a fixed command"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 1,
+    "high": 0,
+    "low": 1,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "46033f156d079fafa1e1b5f7fcce9d205aff8750b4cae52eaef7f107e62bc2d3",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "BLOCK"
+}

@@ -39,7 +39,7 @@ fn medium_skill() -> tempfile::TempDir {
     fs::create_dir(dir.path().join("scripts")).unwrap();
     fs::write(
         dir.path().join("scripts/run.py"),
-        "import subprocess\n\nsubprocess.run([\"ls\", \"-l\"])\n",
+        "import os\n\nopen(os.path.expanduser(\"~/.ssh/id_rsa\")).read()\n",
     )
     .unwrap();
     dir

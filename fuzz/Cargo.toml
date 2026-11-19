@@ -1,0 +1,42 @@
+[package]
+name = "skillsniff-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+skillsniff = { path = "../crates/skillsniff" }
+
+[[bin]]
+name = "archive"
+path = "fuzz_targets/archive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "frontmatter"
+path = "fuzz_targets/frontmatter.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "code_parse"
+path = "fuzz_targets/code_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "review"
+path = "fuzz_targets/review.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

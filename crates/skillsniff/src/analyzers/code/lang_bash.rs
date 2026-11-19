@@ -9,7 +9,7 @@
 //! stages, input redirections, here-strings and here-documents, or the
 //! callers of the function it runs in.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::Instant;
 
 use tree_sitter::{Language, Node, Tree, TreeCursor};
@@ -106,6 +106,10 @@ struct Cmd<'t> {
     socket: bool,
     /// What an `exec`/`eval` runs as code.
     code: Code<'t>,
+    /// The program or the code text is not a literal.
+    dynamic: bool,
+    /// The variable that holds the program (`$X args`, `exec "${cmd[@]}"`).
+    prog_var: Option<String>,
     /// Arguments a network client reads to authenticate but does not send
     /// (`ssh -i key`, `curl --cert file`).
     exclude: Vec<Node<'t>>,
@@ -146,6 +150,20 @@ struct Walk<'t> {
     dynamic: Vec<Dynamic<'t>>,
     code_refs: BTreeMap<String, Vec<String>>,
     next_name: usize,
+    /// Plain-text values of variables assigned once, and every assignment count.
+    consts: HashMap<String, String>,
+    assigned: HashMap<String, usize>,
+    /// For each variable, whether each of its assignments is a plain literal.
+    assigned_all: HashMap<String, Vec<bool>>,
+    /// First word of arrays assigned a literal first element: `cmd=(npx ...)`.
+    array_first: HashMap<String, String>,
+    /// Whether every write to an array variable so far is `name=(literal ...)`.
+    array_ok: HashMap<String, bool>,
+    /// `name+=(...)` appends to an array variable.
+    appends: HashMap<String, usize>,
+    /// A write the walk cannot follow (`source`, `eval`, a namref, a computed
+    /// name): no variable is folded in this file.
+    fold_off: bool,
     cursor: Option<TreeCursor<'t>>,
 }
 
@@ -162,6 +180,13 @@ impl<'t> Walk<'t> {
             dynamic: Vec::new(),
             code_refs: BTreeMap::new(),
             next_name: 0,
+            consts: HashMap::new(),
+            assigned: HashMap::new(),
+            assigned_all: HashMap::new(),
+            array_first: HashMap::new(),
+            array_ok: HashMap::new(),
+            appends: HashMap::new(),
+            fold_off: arithmetic_assigns(src),
             cursor: None,
         }
     }
@@ -399,10 +424,29 @@ impl<'t> Walk<'t> {
                 inner.in_literal = true;
             }
             "variable_assignment" => self.assignment(node),
+            k if k.contains("arithmetic") => {
+                let t = self.text(node);
+                if t.contains('=') && !t.contains("==") {
+                    self.fold_off = true;
+                }
+            }
             "declaration_command" => {
                 for c in self.core.children_upto(node, usize::MAX) {
-                    if c.kind() == "variable_name" {
-                        self.core.not_values.insert(c.start_byte());
+                    match c.kind() {
+                        "variable_name" => {
+                            self.core.not_values.insert(c.start_byte());
+                        }
+                        "variable_assignment" => {}
+                        // `declare -n ref=var` makes a name reference.
+                        "word" => {
+                            let t = self.text(c);
+                            if t.starts_with('-') && t.contains('n') {
+                                self.fold_off = true;
+                            }
+                        }
+                        // A quoted or computed argument (`declare "c=$1"`)
+                        // writes a variable the walk cannot name.
+                        _ => self.fold_off = true,
                     }
                 }
             }
@@ -442,6 +486,10 @@ impl<'t> Walk<'t> {
 
     /// `$NAME` and `${NAME…}` of a secret-looking variable is a source.
     fn expansion(&mut self, node: Node<'t>) {
+        let t = self.text(node);
+        if t.starts_with("${") && (t.contains(":=") || t.contains('=')) && !t.contains("==") {
+            self.fold_off = true;
+        }
         let var = self
             .core
             .children_upto(node, usize::MAX)
@@ -498,6 +546,54 @@ impl<'t> Walk<'t> {
         self.core.not_values.insert(name.start_byte());
         let target = self.text(name).to_string();
         let value = node.child_by_field_name("value");
+        *self.assigned.entry(target.clone()).or_default() += 1;
+        let indexed = node
+            .child_by_field_name("name")
+            .is_some_and(|n| n.kind() == "subscript");
+        let append = value
+            .is_some_and(|v| self.core.src[node.start_byte()..v.start_byte()].ends_with(b"+="));
+        let is_array = value.is_some_and(|v| v.kind() == "array");
+        if append && is_array && self.array_ok.contains_key(&target) {
+            // Appending items to an array cannot change its first item.
+            *self.appends.entry(target.clone()).or_default() += 1;
+        } else {
+            let mut literal = false;
+            if let Some(v) = value {
+                let text = self.fold(v);
+                let known = !text.contains([UNKNOWN_PIECE, IFS_SEP]) && !append && !indexed;
+                literal = known && !text.contains('$');
+                if known {
+                    self.consts.insert(target.clone(), text);
+                }
+                if is_array {
+                    let all = self
+                        .core
+                        .children(v)
+                        .into_iter()
+                        .all(|e| !self.fold(e).contains(['$', UNKNOWN_PIECE, IFS_SEP]));
+                    literal = all && !append && !indexed;
+                    let first = v.named_child(0).map(|f| self.fold(f));
+                    let ok = !append
+                        && !indexed
+                        && first
+                            .as_ref()
+                            .is_some_and(|f| !f.contains(['$', UNKNOWN_PIECE, IFS_SEP]));
+                    let entry = self.array_ok.entry(target.clone()).or_insert(true);
+                    *entry &= ok;
+                    if let (true, Some(f)) = (ok, first) {
+                        self.array_first.insert(target.clone(), f);
+                    }
+                } else if let Some(entry) = self.array_ok.get_mut(&target) {
+                    *entry = false;
+                }
+            } else if let Some(entry) = self.array_ok.get_mut(&target) {
+                *entry = false;
+            }
+            self.assigned_all
+                .entry(target.clone())
+                .or_default()
+                .push(literal);
+        }
         if let Some(v) = value {
             // `c=curl`: `$c …` may run curl. Every value is kept.
             let text = self.fold(v);
@@ -984,12 +1080,16 @@ impl<'t> Walk<'t> {
             shell_reader: false,
             socket: false,
             code: Code::None,
+            dynamic: false,
+            prog_var: None,
             exclude: Vec::new(),
             own_inputs,
         };
         if dynamic && let Some((n, _)) = words.get(idx) {
             // A computed program runs its own name: `$(curl …)`, `$X`.
             cmd.class = Some(EXEC);
+            cmd.dynamic = true;
+            cmd.prog_var = self.program_var(*n);
             cmd.code = Code::Nodes(vec![*n]);
         }
         let has_input = scope.input.is_some() || stdin_args || own_input;
@@ -1060,6 +1160,32 @@ impl<'t> Walk<'t> {
     ) {
         let texts: Vec<&str> = rest.iter().map(|(_, t)| t.as_str()).collect();
         let any = |f: &dyn Fn(&str) -> bool| texts.iter().any(|t| f(t));
+        let computed = |t: &str| t.contains(['$', UNKNOWN_PIECE, '`']);
+        match prog {
+            "source" | "." | "eval" | "let" => self.fold_off = true,
+            "printf" => {
+                if let Some(at) = texts.iter().position(|t| *t == "-v")
+                    && texts.get(at + 1).is_none_or(|n| computed(n))
+                {
+                    self.fold_off = true;
+                }
+            }
+            "read" | "mapfile" | "readarray"
+                if texts.iter().any(|t| !is_option(t) && computed(t)) =>
+            {
+                self.fold_off = true;
+            }
+            _ => {}
+        }
+        if prog == "getopts" {
+            // `getopts spec NAME` writes NAME.
+            if let Some(name) = texts.get(1) {
+                self.assigned_all
+                    .entry((*name).to_string())
+                    .or_default()
+                    .push(false);
+            }
+        }
         match prog {
             "curl" => {
                 cmd.class = Some(NETWORK);
@@ -1436,6 +1562,7 @@ impl<'t> Walk<'t> {
             line: line(shown),
             args_refs,
             text: self.display(shown),
+            dynamic: false,
         }
     }
 
@@ -1477,6 +1604,7 @@ impl<'t> Walk<'t> {
             line: line(c.node),
             args_refs,
             text: self.display(c.node),
+            dynamic: class == EXEC && c.dynamic,
         }
     }
 
@@ -1607,6 +1735,142 @@ impl<'t> Walk<'t> {
         out
     }
 
+    /// Name of the variable a program word expands: `$X`, `"${X}"`,
+    /// `"${X[@]}"`.
+    fn program_var(&self, node: Node<'t>) -> Option<String> {
+        if let Some(v) = self.expanded_variable(node) {
+            return Some(v);
+        }
+        let text = self.text(node).trim_matches('"');
+        let inner = text.strip_prefix("${")?.strip_suffix('}')?;
+        let name = inner
+            .strip_suffix("[@]")
+            .or_else(|| inner.strip_suffix("[*]"))?;
+        Some(name.to_string())
+    }
+
+    /// How many writes to `name` the walk has seen: assignments and appends
+    /// we classified, against every bind (`read`, `printf -v`, `mapfile`,
+    /// loops) recorded for it.
+    fn only_known_writes(&self, name: &str) -> bool {
+        let known = self.assigned_all.get(name).map_or(0, Vec::len)
+            + self.appends.get(name).copied().unwrap_or(0);
+        let binds = self
+            .core
+            .binds
+            .iter()
+            .filter(|b| b.targets.iter().any(|t| t == name))
+            .count();
+        known == binds
+    }
+
+    /// The text of a variable written exactly once, with a literal value
+    /// (which may name other such variables, to a bounded depth).
+    fn value_of(&self, name: &str, depth: usize) -> Option<String> {
+        if depth == 0
+            || self.fold_off
+            || self.assigned.get(name) != Some(&1)
+            || !self.assigned_all.contains_key(name)
+            || !self.only_known_writes(name)
+        {
+            return None;
+        }
+        let raw = self.consts.get(name)?;
+        let out = self.expand_depth(raw, depth - 1);
+        (!out.contains('$')).then_some(out)
+    }
+
+    /// Whether a variable only ever receives `name=(literal ...)` and
+    /// appends, so its first item is a literal.
+    fn array_fixed(&self, name: &str) -> bool {
+        !self.fold_off
+            && self.array_ok.get(name) == Some(&true)
+            && self.array_first.contains_key(name)
+            && self.only_known_writes(name)
+    }
+
+    /// `$name` and `${name}` replaced by the text of variables written once.
+    fn expand(&self, text: &str) -> String {
+        self.expand_depth(text, 4)
+    }
+
+    fn expand_depth(&self, text: &str, depth: usize) -> String {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(at) = rest.find('$') {
+            out.push_str(&rest[..at]);
+            let after = &rest[at + 1..];
+            let (name, len) = match after.strip_prefix('{') {
+                Some(inner) => match inner.find('}') {
+                    Some(end) => (&inner[..end], end + 2),
+                    None => ("", 0),
+                },
+                None => {
+                    let end = after
+                        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                        .unwrap_or(after.len());
+                    (&after[..end], end)
+                }
+            };
+            match self.value_of(name, depth).filter(|_| len > 0) {
+                Some(v) => out.push_str(&v),
+                None => out.push_str(&rest[at..at + 1 + len]),
+            }
+            rest = &after[len..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// Settles, for every command that runs code, whether the code text
+    /// (with single-assignment variables folded in) fetches and pipes into
+    /// a shell, and whether it is a literal at all.
+    fn resolve_code(&mut self) {
+        let mut results = Vec::new();
+        for c in self.cmds.iter().chain(&self.extra) {
+            let shellish = c
+                .word
+                .as_deref()
+                .is_some_and(|w| is_posix_shell(w) || w == "eval");
+            if let Some(var) = &c.prog_var {
+                // A program held in a variable is fixed when every value it
+                // is given is a literal (or an array starting with one).
+                let fixed = self.array_fixed(var)
+                    || self.value_of(var, 4).is_some()
+                    || (!self.fold_off
+                        && self
+                            .assigned_all
+                            .get(var)
+                            .is_some_and(|v| !v.is_empty() && v.iter().all(|l| *l))
+                        && self.only_known_writes(var));
+                results.push((false, !fixed));
+                continue;
+            }
+            results.push(match &c.code {
+                Code::Nodes(nodes) => {
+                    let text: Vec<String> = nodes.iter().map(|n| self.fold(*n)).collect();
+                    let text = self.expand(&text.join(" "));
+                    (
+                        shellish && pipes_download_to_shell(&spaced(&text)),
+                        c.dynamic || text.contains(['$', UNKNOWN_PIECE]),
+                    )
+                }
+                Code::Input | Code::All => (false, true),
+                Code::None => (false, c.dynamic),
+            });
+        }
+        let n = self.cmds.len();
+        for (i, (fetch, dynamic)) in results.into_iter().enumerate() {
+            let c = if i < n {
+                &mut self.cmds[i]
+            } else {
+                &mut self.extra[i - n]
+            };
+            c.fetch_pipe |= fetch;
+            c.dynamic = dynamic;
+        }
+    }
+
     /// Classifies `$c args` as every program `c` was assigned. The command
     /// stays an `exec` of a computed program, and each meaning the rules
     /// classify adds its own sink. A wrapper meaning (`sudo`, `env`,
@@ -1676,6 +1940,7 @@ impl<'t> Walk<'t> {
     fn finish(mut self) -> Facts {
         self.resolve_dynamic();
         self.cmds.sort_by_key(|c| c.node.start_byte());
+        self.resolve_code();
         for i in 0..self.cmds.len() {
             let c = &self.cmds[i];
             let Some(word) = c.word.as_deref().filter(|w| self.funcs.contains(*w)) else {
@@ -1692,6 +1957,15 @@ impl<'t> Walk<'t> {
                 rhs_callee: None,
             });
         }
+        // A key named only as an identity option is read by the client, not
+        // handled by the script.
+        let cuts: Vec<(usize, usize)> = self
+            .cmds
+            .iter()
+            .chain(&self.extra)
+            .flat_map(|c| c.exclude.iter().map(|n| (n.start_byte(), n.end_byte())))
+            .collect();
+        self.core.drop_sources_within(&cuts);
         self.core.index_tokens();
         let network: Vec<String> = self
             .cmds
@@ -1895,4 +2169,25 @@ fn only_identity_secrets(command: &str) -> bool {
         i += 1;
     }
     literal_source_class(&rest.join(" ")).is_none()
+}
+
+/// Whether `((...))` somewhere assigns (`((c=$1))`, `((c+=1))`).
+fn arithmetic_assigns(src: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(src);
+    let mut rest: &str = &text;
+    while let Some(at) = rest.find("((") {
+        let body = &rest[at + 2..];
+        let end = body.find("))").unwrap_or(body.len());
+        let b = &body.as_bytes()[..end];
+        let assigns = b.iter().enumerate().any(|(i, &c)| {
+            c == b'='
+                && b.get(i + 1) != Some(&b'=')
+                && (i == 0 || !matches!(b[i - 1], b'=' | b'!' | b'<' | b'>'))
+        });
+        if assigns {
+            return true;
+        }
+        rest = &body[end..];
+    }
+    false
 }

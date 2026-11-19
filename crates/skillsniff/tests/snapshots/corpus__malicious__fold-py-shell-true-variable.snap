@@ -1,0 +1,53 @@
+---
+source: crates/skillsniff/tests/corpus.rs
+expression: value
+---
+{
+  "coverage": {
+    "agent_config": "ran",
+    "code": "ran",
+    "hidden": "ran",
+    "instructions": "ran"
+  },
+  "findings": [
+    {
+      "advice": "Do not use the skill.",
+      "evidence": "subprocess.run(...)",
+      "explain": "The code fetches content from the network and executes it, so what runs is not what was reviewed.",
+      "locations": [
+        {
+          "file": "scripts/install.py",
+          "line": 4
+        }
+      ],
+      "rule": "exec.download-and-run",
+      "severity": "critical",
+      "source": "engine",
+      "suppressed": false,
+      "title": "Downloads code and runs it"
+    }
+  ],
+  "review": {
+    "applied": false,
+    "rejected_changes": []
+  },
+  "schema_version": "1",
+  "summary": {
+    "critical": 1,
+    "high": 0,
+    "low": 0,
+    "medium": 0
+  },
+  "target": {
+    "commit": null,
+    "source": "[source]",
+    "tree_sha256": "ef4d36a264cf1b81650e7f775f2a322fd9df47665c7f35210c535dd87840c127",
+    "type": "skill"
+  },
+  "tool": {
+    "name": "skillsniff",
+    "rules": "2026.11.1",
+    "version": "[version]"
+  },
+  "verdict": "BLOCK"
+}
