@@ -8,4 +8,7 @@ edition = "2024"
 rust-version = "1.90"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Haikeysgit/skillsniff"
-homepage = "https://github.com/Haikeysgit/skillsniff"
+
+[profile.dist]
+inherits = "release"
+lto = "thin"

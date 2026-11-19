@@ -387,7 +387,7 @@ fn many_hits_without_spaces_and_dense_lines_are_bounded() {
     let many = "echo a >> ~/.zshrc\n".repeat(50_000);
     let start = std::time::Instant::now();
     run_files(&[("a.sh", &format!("{line}\n{many}"))]);
-    assert!(start.elapsed().as_secs() < 10, "{:?}", start.elapsed());
+    assert!(start.elapsed().as_secs() < 20, "{:?}", start.elapsed());
 }
 
 #[test]

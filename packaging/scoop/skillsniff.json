@@ -6,13 +6,11 @@
     "architecture": {
         "64bit": {
             "url": "https://github.com/Haikeysgit/skillsniff/releases/download/v0.1.0/skillsniff-cli-x86_64-pc-windows-msvc.zip",
-            "hash": "REPLACE_WITH_SHA256_OF_x86_64_ZIP",
-            "extract_dir": "skillsniff-cli-x86_64-pc-windows-msvc"
+            "hash": "REPLACE_WITH_SHA256_OF_x86_64_ZIP"
         },
         "arm64": {
             "url": "https://github.com/Haikeysgit/skillsniff/releases/download/v0.1.0/skillsniff-cli-aarch64-pc-windows-msvc.zip",
-            "hash": "REPLACE_WITH_SHA256_OF_ARM64_ZIP",
-            "extract_dir": "skillsniff-cli-aarch64-pc-windows-msvc"
+            "hash": "REPLACE_WITH_SHA256_OF_ARM64_ZIP"
         }
     },
     "bin": "skillsniff.exe",
@@ -22,12 +20,10 @@
     "autoupdate": {
         "architecture": {
             "64bit": {
-                "url": "https://github.com/Haikeysgit/skillsniff/releases/download/v$version/skillsniff-cli-x86_64-pc-windows-msvc.zip",
-                "extract_dir": "skillsniff-cli-x86_64-pc-windows-msvc"
+                "url": "https://github.com/Haikeysgit/skillsniff/releases/download/v$version/skillsniff-cli-x86_64-pc-windows-msvc.zip"
             },
             "arm64": {
-                "url": "https://github.com/Haikeysgit/skillsniff/releases/download/v$version/skillsniff-cli-aarch64-pc-windows-msvc.zip",
-                "extract_dir": "skillsniff-cli-aarch64-pc-windows-msvc"
+                "url": "https://github.com/Haikeysgit/skillsniff/releases/download/v$version/skillsniff-cli-aarch64-pc-windows-msvc.zip"
             }
         }
     }

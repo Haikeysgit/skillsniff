@@ -13,7 +13,7 @@ A security scanner for AI agent skills. Check a skill for hidden risks *before* 
 [![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](#supported-platforms)
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-dea584)](https://www.rust-lang.org)
 
-[Why](#why-skillsniff) · [How it works](#how-it-works) · [What it catches](#what-it-catches) · [Roadmap](#roadmap) · [Design](docs/specs/2026-11-17-skillsniff-design.md) · [Security](SECURITY.md)
+[Why](#why-skillsniff) · [How it works](#how-it-works) · [What it catches](#what-it-catches) · [Roadmap](#roadmap) · [Design](docs/specs/2026-11-17-skillsniff-design.md) · [Known limits](docs/limits.md) · [Security](SECURITY.md)
 
 </div>
 

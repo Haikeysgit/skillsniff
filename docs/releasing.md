@@ -1,6 +1,6 @@
 # Releasing
 
-Releases are built by [cargo-dist](https://github.com/axodotdev/cargo-dist) (`dist`) from `dist-workspace.toml` and `.github/workflows/release.yml`. The workflow runs only when a version tag is pushed, so pull requests and required checks are unaffected.
+Releases are built by [cargo-dist](https://github.com/axodotdev/cargo-dist) (`dist`) from `dist-workspace.toml` and `.github/workflows/release.yml`. The workflow runs only when a version tag is pushed, so it does not publish anything from pull requests. On pull requests it only runs `dist plan`, a read-only check with no secrets, which does not affect the required checks.
 
 A release produces archives for six targets, `sha256.sum`, shell and PowerShell installers, a Homebrew formula, and a GitHub build provenance attestation for every archive.
 
@@ -36,7 +36,7 @@ The workflow `reproducible.yml` builds the Linux musl binary twice in clean cont
 The manifests live in `packaging/` with placeholder hashes. After the release is published:
 
 1. Download `sha256.sum` from the release and run `scripts/fill-packaging.sh 0.1.0 sha256.sum`.
-2. Check the archive folder name inside the Windows zips. If it is not `skillsniff-cli-<target>`, fix `extract_dir` in the Scoop manifest and `RelativeFilePath` in the winget installer manifest.
+2. The Windows zips are flat (`skillsniff.exe` at the archive root), so the manifests need no folder name. Check that again if the archive layout changes.
 3. Scoop: copy `packaging/scoop/skillsniff.json` to `bucket/skillsniff.json` in `Haikeysgit/scoop-skillsniff` and push.
 4. winget: validate with `winget validate packaging/winget`, then submit the three files in `packaging/winget/` as a pull request to `microsoft/winget-pkgs` under `manifests/h/Haikeysgit/skillsniff/<version>/`. Tools such as `wingetcreate` can do this.
 
