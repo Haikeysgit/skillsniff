@@ -10,6 +10,10 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - `skillsniff setup` (an alias of `install-skill`). When you run it in a terminal it shows the skillsniff banner and a "you're set up" message. Agents and scripts still get plain output.
 
+### Fixed
+
+- `skillsniff scan github.com/owner/repo/path` now works, the same as `owner/repo/path`, including `@ref`.
+
 ## [0.1.1] - 2026-11-19
 
 ### Added
