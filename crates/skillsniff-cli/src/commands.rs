@@ -41,7 +41,8 @@ struct Cli {
 enum Command {
     /// Scan a skill from GitHub, a local folder or an archive.
     Scan(ScanArgs),
-    /// Add the skillsniff skill to Claude Code or Codex.
+    /// Set up skillsniff in Claude Code and Codex (also: `skillsniff setup`).
+    #[command(visible_alias = "setup")]
     InstallSkill(crate::install_skill::InstallSkillArgs),
     /// Work with external reviews of a report.
     Review {

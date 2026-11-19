@@ -22,7 +22,7 @@ pub enum Source {
 /// Parses a source argument.
 ///
 /// Accepted: an existing folder or file on disk (local paths win over the
-/// shorthand), `https://github.com/o/r`, `github.com/o/r/tree/<ref>/<path>`,
+/// shorthand), `https://github.com/o/r[/path][@ref]`, `github.com/o/r/tree/<ref>/<path>`,
 /// `o/r`, `o/r/path`, `o/r@ref` and `o/r/path@ref`.
 pub fn parse_source(s: &str) -> Result<Source, String> {
     let p = Path::new(s);
@@ -118,17 +118,23 @@ fn parse_shorthand(s: &str) -> Result<Source, String> {
     github(owner, repo, it.next(), git_ref)
 }
 
-/// What follows `github.com/`: `o/r` or `o/r/tree/<ref>[/<path>]`.
+/// What follows `github.com/`: `o/r[/path][@ref]` or `o/r/tree/<ref>[/<path>]`.
 fn parse_url_tail(rest: &str) -> Result<Source, String> {
     let rest = rest.trim_end_matches('/');
     let parts: Vec<&str> = rest.split('/').collect();
     match parts.as_slice() {
-        [o, r] => github(o, r, None, None),
         [o, r, "tree", git_ref] => github(o, r, None, Some(git_ref)),
         [o, r, "tree", git_ref, path @ ..] => github(o, r, Some(&path.join("/")), Some(git_ref)),
-        _ => Err(format!(
+        [
+            _,
+            _,
+            "tree" | "blob" | "commit" | "releases" | "pull" | "issues",
+            ..,
+        ] => Err(format!(
             "unsupported GitHub URL \"{}\" (expected github.com/owner/repo or .../tree/<ref>/<path>)",
             shown(rest)
         )),
+        // Same as the shorthand: owner/repo, owner/repo/path, each with @ref.
+        _ => parse_shorthand(rest),
     }
 }

@@ -25,6 +25,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Pull the build image (with retries)
+        run: |
+          for i in 1 2 3 4 5; do
+            docker pull rust:1-slim-bookworm && exit 0
+            echo "pull failed (attempt $i), retrying in $((i * 10)) s"
+            sleep $((i * 10))
+          done
+          exit 1
       - name: Build twice in clean containers
         run: |
           set -euo pipefail
