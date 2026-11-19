@@ -127,9 +127,29 @@ See the full [design specification](docs/specs/2026-11-17-skillsniff-design.md) 
 
 ## Status
 
-skillsniff is being designed and built in public. The commands in [Installation](#installation) work once the first release is published.
+v0.1 is out. skillsniff is built in public.
 
 ## Installation
+
+### Ask your agent
+
+Paste this into Claude Code or Codex:
+
+> Install the skillsniff skill from https://github.com/Haikeysgit/skillsniff
+
+Your agent copies the skill, asks you once before installing the `skillsniff` program, and sets everything up. From then on it checks every skill before installing it, and you can type `/skillsniff` to check one.
+
+In Claude Code you can also use the plugin system:
+
+```text
+/plugin marketplace add Haikeysgit/skillsniff
+/plugin install skillsniff@skillsniff
+```
+
+> [!TIP]
+> **For AI agents installing this skill:** the skill is `skills/skillsniff/SKILL.md` in this repository. Copy the `skills/skillsniff/` folder into your skills folder (Claude Code: `~/.claude/skills/skillsniff/`, Codex: `~/.agents/skills/skillsniff/`). Then follow the **Setup** section of that SKILL.md: it installs the `skillsniff` program after asking the user.
+
+### Install the program yourself
 
 Pick one. Each installs the `skillsniff` command.
 

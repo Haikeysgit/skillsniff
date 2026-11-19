@@ -103,7 +103,14 @@ fn panic_exits_5_quietly() {
     assert_eq!(code(&out), 5);
     assert!(out.stdout.is_empty());
     let err = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(err.trim(), "internal error (skillsniff 0.1.0)");
+    assert_eq!(
+        err.trim(),
+        concat!(
+            "internal error (skillsniff ",
+            env!("CARGO_PKG_VERSION"),
+            ")"
+        )
+    );
 }
 
 #[test]
@@ -213,7 +220,7 @@ fn review_apply_cli_round_trip() {
 
 fn adapter_scan(name: &str) -> std::process::Output {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../adapters")
+        .join("../../skills")
         .join(name);
     skillsniff()
         .arg("scan")
@@ -225,14 +232,17 @@ fn adapter_scan(name: &str) -> std::process::Output {
 }
 
 #[test]
-fn shipped_adapters_scan_pass() {
-    for name in ["claude-code", "codex"] {
-        let out = adapter_scan(name);
-        assert_eq!(code(&out), 0, "{name} adapter must scan PASS");
-        let report: Report = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(report.verdict, Verdict::Pass, "{name}");
-        assert!(report.findings.is_empty(), "{name}: {:?}", report.findings);
-    }
+fn shipped_skill_scans_pass() {
+    let out = adapter_scan("skillsniff");
+    assert_eq!(
+        code(&out),
+        0,
+        "skill must scan PASS: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let report: Report = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report.verdict, Verdict::Pass);
+    assert!(report.findings.is_empty(), "{:?}", report.findings);
 }
 
 fn install_skill_cmd(home: &Path) -> Command {
@@ -253,11 +263,11 @@ fn install_skill_writes_the_shipped_adapters() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     assert_eq!(
         fs::read_to_string(&claude).unwrap(),
-        fs::read_to_string(root.join("adapters/claude-code/SKILL.md")).unwrap()
+        fs::read_to_string(root.join("skills/skillsniff/SKILL.md")).unwrap()
     );
     assert_eq!(
         fs::read_to_string(&codex).unwrap(),
-        fs::read_to_string(root.join("adapters/codex/SKILL.md")).unwrap()
+        fs::read_to_string(root.join("skills/skillsniff/SKILL.md")).unwrap()
     );
     // Running again is a no-op.
     let out = install_skill_cmd(home.path())

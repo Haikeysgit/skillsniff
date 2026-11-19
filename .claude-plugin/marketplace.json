@@ -1,0 +1,11 @@
+{
+  "name": "skillsniff",
+  "owner": { "name": "Haikeys" },
+  "plugins": [
+    {
+      "name": "skillsniff",
+      "source": "./",
+      "description": "Checks AI agent skills for hidden risks before your agent installs them."
+    }
+  ]
+}

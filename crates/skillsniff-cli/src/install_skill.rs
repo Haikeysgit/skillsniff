@@ -9,8 +9,8 @@ use clap::ValueEnum;
 
 use crate::commands::{EXIT_INTERNAL, EXIT_USAGE};
 
-const CLAUDE_CODE_SKILL: &str = include_str!("../../../adapters/claude-code/SKILL.md");
-const CODEX_SKILL: &str = include_str!("../../../adapters/codex/SKILL.md");
+/// The one skill file shipped for every agent (`skills/skillsniff/SKILL.md`).
+const SKILL: &str = include_str!("../../../skills/skillsniff/SKILL.md");
 
 /// Agents that `install-skill` knows how to set up.
 #[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -29,13 +29,6 @@ impl Agent {
             Agent::ClaudeCode => "Claude Code",
             Agent::Codex => "Codex",
             Agent::All => "all agents",
-        }
-    }
-
-    fn skill(self) -> &'static str {
-        match self {
-            Agent::ClaudeCode => CLAUDE_CODE_SKILL,
-            Agent::Codex | Agent::All => CODEX_SKILL,
         }
     }
 
@@ -103,7 +96,7 @@ enum Outcome {
 fn install_one(agent: Agent, base: &Path, force: bool) -> Result<Outcome, String> {
     let dir = agent.skills_dir(base).join("skillsniff");
     let file = dir.join("SKILL.md");
-    let content = agent.skill();
+    let content = SKILL;
     let existed = match fs::read_to_string(&file) {
         Ok(existing) if existing == content => return Ok(Outcome::UpToDate(file)),
         Ok(existing) if !force && !written_by_us(&existing) => {

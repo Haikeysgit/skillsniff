@@ -1,10 +1,16 @@
-# Agent adapters
+# The skillsniff skill
 
-An adapter is a small skill that makes your coding agent run skillsniff whenever you ask it to install, add or check another skill. Phase 1 ships two: Claude Code and Codex. Both follow the same steps and differ only in where they install.
+The skillsniff skill makes your coding agent run skillsniff whenever you ask it to install, add or check another skill. One skill file, [`skills/skillsniff/SKILL.md`](../skills/skillsniff/SKILL.md), works in both Claude Code and Codex.
 
-Both adapters need the `skillsniff` command on your `PATH`. See the installation section of the [README](../README.md).
+The skill needs the `skillsniff` program. If it is missing, the skill's **Setup** section has the agent install it after asking you once: with brew, Scoop or winget when available, otherwise from the release archive with its checksum checked.
 
-## Install
+## Install by asking your agent
+
+> Install the skillsniff skill from https://github.com/Haikeysgit/skillsniff
+
+In Claude Code you can also run `/plugin marketplace add Haikeysgit/skillsniff` and then `/plugin install skillsniff@skillsniff`.
+
+## Install with the command
 
 ```sh
 skillsniff install-skill            # every agent found on this computer
@@ -21,8 +27,8 @@ Or copy the adapter folder into the agent's skills directory yourself.
 
 | Agent | Source folder | Destination |
 | --- | --- | --- |
-| Claude Code | `adapters/claude-code/` | `~/.claude/skills/skillsniff/` |
-| Codex | `adapters/codex/` | `$HOME/.agents/skills/skillsniff/` (user) or `.agents/skills/skillsniff/` (repository) |
+| Claude Code | `skills/skillsniff/` | `~/.claude/skills/skillsniff/` |
+| Codex | `skills/skillsniff/` | `$HOME/.agents/skills/skillsniff/` (user) or `.agents/skills/skillsniff/` (repository) |
 
 Start a new agent session afterwards so the skill is picked up.
 
