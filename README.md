@@ -157,9 +157,14 @@ In Claude Code you can also use the plugin system:
 > [!TIP]
 > **For AI agents installing this skill:** the skill is `skills/skillsniff/SKILL.md` in this repository. Copy the `skills/skillsniff/` folder into your skills folder (Claude Code: `~/.claude/skills/skillsniff/`, Codex: `~/.agents/skills/skillsniff/`). Then follow the **Setup** section of that SKILL.md: it installs the `skillsniff` program after asking the user.
 
-### Install the program yourself
+### Install it yourself from a terminal
 
-Pick one. Each installs the `skillsniff` command.
+Two steps in any terminal (PowerShell, macOS Terminal, your editor's terminal):
+
+1. Install the `skillsniff` program with one of the commands below.
+2. Run `skillsniff setup`. It adds the skill to Claude Code and Codex.
+
+Pick one for step 1:
 
 ```sh
 # macOS and Linux (Homebrew)
@@ -198,10 +203,10 @@ gh attestation verify <archive> --repo Haikeysgit/skillsniff
 
 ### Use it from your agent
 
-One command adds the skillsniff skill to Claude Code and Codex:
+`skillsniff setup` (also called `skillsniff install-skill`) adds the skillsniff skill to Claude Code and Codex:
 
 ```sh
-skillsniff install-skill
+skillsniff setup
 ```
 
 It sets up every agent it finds on your computer. Name one to pick it (`skillsniff install-skill claude-code`, `codex` or `all`), or add `--project` to install into the current project only. Start a new agent session afterwards. Your agent then checks every skill before installing it, and you can type `/skillsniff` any time. See [docs/adapters.md](docs/adapters.md) for what the skill does.

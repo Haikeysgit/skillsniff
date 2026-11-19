@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use clap::ValueEnum;
 
 use crate::commands::{EXIT_INTERNAL, EXIT_USAGE};
+use crate::output::{ConsoleGuard, detect, render_banner};
 
 /// The one skill file shipped for every agent (`skills/skillsniff/SKILL.md`).
 const SKILL: &str = include_str!("../../../skills/skillsniff/SKILL.md");
@@ -131,6 +132,24 @@ fn install_one(agent: Agent, base: &Path, force: bool) -> Result<Outcome, String
 }
 
 pub fn install_skill_command(args: &InstallSkillArgs) -> i32 {
+    // A person in a terminal gets the banner; an agent or a pipe gets plain lines.
+    let mode = detect(false, false);
+    let _guard = ConsoleGuard::prepare(mode.decorate);
+    if mode.decorate {
+        println!("{}", render_banner(&mode));
+    }
+    let ok = if mode.decorate {
+        console::style("✔").green().bold().to_string()
+    } else {
+        String::new()
+    };
+    let mark = |line: String| {
+        if ok.is_empty() {
+            line
+        } else {
+            format!("  {ok} {line}")
+        }
+    };
     let base = if args.project {
         match std::env::current_dir() {
             Ok(d) => d,
@@ -174,23 +193,32 @@ pub fn install_skill_command(args: &InstallSkillArgs) -> i32 {
         match install_one(agent, &base, args.force) {
             Ok(Outcome::Installed(p)) => {
                 println!(
-                    "Installed the skillsniff skill for {} at {}",
-                    agent.label(),
-                    p.display()
+                    "{}",
+                    mark(format!(
+                        "Installed the skillsniff skill for {} at {}",
+                        agent.label(),
+                        p.display()
+                    ))
                 );
             }
             Ok(Outcome::Updated(p)) => {
                 println!(
-                    "Updated the skillsniff skill for {} at {}",
-                    agent.label(),
-                    p.display()
+                    "{}",
+                    mark(format!(
+                        "Updated the skillsniff skill for {} at {}",
+                        agent.label(),
+                        p.display()
+                    ))
                 );
             }
             Ok(Outcome::UpToDate(p)) => {
                 println!(
-                    "The skillsniff skill for {} is already up to date at {}",
-                    agent.label(),
-                    p.display()
+                    "{}",
+                    mark(format!(
+                        "The skillsniff skill for {} is already up to date at {}",
+                        agent.label(),
+                        p.display()
+                    ))
                 );
             }
             Err(msg) => {
@@ -202,6 +230,18 @@ pub fn install_skill_command(args: &InstallSkillArgs) -> i32 {
     if failed {
         return EXIT_USAGE;
     }
-    println!("Start a new agent session, then ask it to install a skill or type /skillsniff.");
+    if mode.decorate {
+        println!();
+        println!("  You're set up. Start a new agent session: your agent now checks every");
+        println!("  skill before installing it, and you can type /skillsniff to check one.");
+        println!();
+        println!(
+            "  {} Try it yourself: {}",
+            console::style("Tip:").dim(),
+            console::style("skillsniff scan github.com/owner/repo").cyan()
+        );
+    } else {
+        println!("Start a new agent session, then ask it to install a skill or type /skillsniff.");
+    }
     0
 }
