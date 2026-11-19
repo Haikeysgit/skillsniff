@@ -1,0 +1,34 @@
+{
+    "version": "0.1.0",
+    "description": "Security scanner for AI agent skills. Checks a skill for hidden risks before your coding agent installs it.",
+    "homepage": "https://github.com/Haikeysgit/skillsniff",
+    "license": "MIT OR Apache-2.0",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/Haikeysgit/skillsniff/releases/download/v0.1.0/skillsniff-cli-x86_64-pc-windows-msvc.zip",
+            "hash": "REPLACE_WITH_SHA256_OF_x86_64_ZIP",
+            "extract_dir": "skillsniff-cli-x86_64-pc-windows-msvc"
+        },
+        "arm64": {
+            "url": "https://github.com/Haikeysgit/skillsniff/releases/download/v0.1.0/skillsniff-cli-aarch64-pc-windows-msvc.zip",
+            "hash": "REPLACE_WITH_SHA256_OF_ARM64_ZIP",
+            "extract_dir": "skillsniff-cli-aarch64-pc-windows-msvc"
+        }
+    },
+    "bin": "skillsniff.exe",
+    "checkver": {
+        "github": "https://github.com/Haikeysgit/skillsniff"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/Haikeysgit/skillsniff/releases/download/v$version/skillsniff-cli-x86_64-pc-windows-msvc.zip",
+                "extract_dir": "skillsniff-cli-x86_64-pc-windows-msvc"
+            },
+            "arm64": {
+                "url": "https://github.com/Haikeysgit/skillsniff/releases/download/v$version/skillsniff-cli-aarch64-pc-windows-msvc.zip",
+                "extract_dir": "skillsniff-cli-aarch64-pc-windows-msvc"
+            }
+        }
+    }
+}
