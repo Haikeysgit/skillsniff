@@ -104,7 +104,7 @@ Scripts are parsed properly, not pattern-matched, across Python, JavaScript, Typ
 | Platform | Architectures | Status |
 | --- | --- | --- |
 | macOS | Apple Silicon, Intel | Planned for first release |
-| Windows | x64, ARM64 | Planned for first release |
+| Windows | x64 (ARM64 runs the x64 build) | Planned for first release |
 | Linux | x64, ARM64 | Planned for first release |
 
 | Agent | Status |

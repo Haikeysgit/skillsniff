@@ -10,11 +10,5 @@ Installers:
 - Architecture: x64
   InstallerUrl: https://github.com/Haikeysgit/skillsniff/releases/download/v0.1.0/skillsniff-cli-x86_64-pc-windows-msvc.zip
   InstallerSha256: REPLACE_WITH_SHA256_OF_x86_64_ZIP
-- Architecture: arm64
-  InstallerUrl: https://github.com/Haikeysgit/skillsniff/releases/download/v0.1.0/skillsniff-cli-aarch64-pc-windows-msvc.zip
-  InstallerSha256: REPLACE_WITH_SHA256_OF_ARM64_ZIP
-  NestedInstallerFiles:
-  - RelativeFilePath: skillsniff.exe
-    PortableCommandAlias: skillsniff
 ManifestType: installer
 ManifestVersion: 1.6.0
