@@ -17,7 +17,7 @@ The verdict comes from the engine's JSON output (the `verdict` field), never fro
 
 ## Steps
 
-1. Run `skillsniff --version`. If the command is not found, stop. Tell the user skillsniff is not installed and point them to the installation section of the skillsniff README. Do not fetch or set up the tool yourself.
+1. Run `skillsniff --version`. If the command is not found, stop. Tell the user skillsniff is not installed and point them to the Installation section of the skillsniff README (https://github.com/Haikeysgit/skillsniff#installation). Do not fetch or set up the tool yourself.
 2. Create a new temporary directory for your work files and use it for everything below. Scan the source and keep the scanned files:
    `skillsniff scan <source> --json --keep > <tmp>/report.json 2> <tmp>/scan.err`
    The kept folder is named on the last line of `<tmp>/scan.err`. Check the exit code first.
