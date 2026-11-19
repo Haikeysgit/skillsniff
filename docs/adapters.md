@@ -11,7 +11,7 @@ Copy the adapter folder into the agent's skills directory.
 | Agent | Source folder | Destination |
 | --- | --- | --- |
 | Claude Code | `adapters/claude-code/` | `~/.claude/skills/skillsniff/` |
-| Codex | `adapters/codex/` | `~/.codex/skills/skillsniff/` |
+| Codex | `adapters/codex/` | `$HOME/.agents/skills/skillsniff/` (user) or `.agents/skills/skillsniff/` (repository) |
 
 Start a new agent session afterwards so the skill is picked up.
 
@@ -20,8 +20,8 @@ Start a new agent session afterwards so the skill is picked up.
 1. Checks that `skillsniff` is installed. If not, it stops and points to the README. It never downloads the tool.
 2. Scans the source and reads the report plus the flagged lines. It writes a review that can add or raise findings, never lower them.
 3. Quotes the final verdict line word for word, then the top findings and the pinned version.
-4. On PASS it installs the exported copy. On CAUTION it asks you first. On BLOCK it refuses.
-5. Installs only from the exported copy, and only when its `tree_sha256` matches the scan.
+4. It checks the exit code of every command (0 PASS, 1 CAUTION, 2 BLOCK, anything else stops). On PASS it installs the exported copy. On CAUTION it asks you first. On BLOCK it refuses.
+5. Exports from the folder the scan kept, so the skill is never fetched twice, and installs only when the export's `tree_sha256` matches the scan.
 
 The adapter files are scanned with skillsniff like any other skill and must give PASS.
 

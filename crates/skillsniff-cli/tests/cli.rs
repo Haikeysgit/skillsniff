@@ -210,3 +210,27 @@ fn review_apply_cli_round_trip() {
     assert!(out.stdout.is_empty());
     assert_eq!(fs::read(&report_path).unwrap(), before);
 }
+
+fn adapter_scan(name: &str) -> std::process::Output {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../adapters")
+        .join(name);
+    skillsniff()
+        .arg("scan")
+        .arg(dir)
+        .args(["--json", "--offline", "--suppressions"])
+        .arg(empty_suppressions())
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn shipped_adapters_scan_pass() {
+    for name in ["claude-code", "codex"] {
+        let out = adapter_scan(name);
+        assert_eq!(code(&out), 0, "{name} adapter must scan PASS");
+        let report: Report = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(report.verdict, Verdict::Pass, "{name}");
+        assert!(report.findings.is_empty(), "{name}: {:?}", report.findings);
+    }
+}

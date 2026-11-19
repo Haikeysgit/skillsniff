@@ -13,7 +13,8 @@ Fixtures are inert test data under `tests/fixtures/`.
 ## Setup
 
 - [ ] `skillsniff --version` works in the agent's shell.
-- [ ] The adapter is in the agent's skills directory and a new session is started.
+- [ ] The adapter is in the agent's skills directory (`~/.claude/skills/` for Claude Code, `$HOME/.agents/skills/` for Codex) and a new session is started.
+- [ ] The agent stops, installs nothing and reports the error when a command exits with 3, 4 or 5 (for example, scan a path that does not exist).
 
 ## Per fixture
 
