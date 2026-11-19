@@ -103,7 +103,14 @@ fn panic_exits_5_quietly() {
     assert_eq!(code(&out), 5);
     assert!(out.stdout.is_empty());
     let err = String::from_utf8_lossy(&out.stderr);
-    assert_eq!(err.trim(), "internal error (skillsniff 0.1.0)");
+    assert_eq!(
+        err.trim(),
+        concat!(
+            "internal error (skillsniff ",
+            env!("CARGO_PKG_VERSION"),
+            ")"
+        )
+    );
 }
 
 #[test]
@@ -213,7 +220,7 @@ fn review_apply_cli_round_trip() {
 
 fn adapter_scan(name: &str) -> std::process::Output {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../adapters")
+        .join("../../skills")
         .join(name);
     skillsniff()
         .arg("scan")
@@ -225,12 +232,97 @@ fn adapter_scan(name: &str) -> std::process::Output {
 }
 
 #[test]
-fn shipped_adapters_scan_pass() {
-    for name in ["claude-code", "codex"] {
-        let out = adapter_scan(name);
-        assert_eq!(code(&out), 0, "{name} adapter must scan PASS");
-        let report: Report = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(report.verdict, Verdict::Pass, "{name}");
-        assert!(report.findings.is_empty(), "{name}: {:?}", report.findings);
-    }
+fn shipped_skill_scans_pass() {
+    let out = adapter_scan("skillsniff");
+    assert_eq!(
+        code(&out),
+        0,
+        "skill must scan PASS: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let report: Report = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report.verdict, Verdict::Pass);
+    assert!(report.findings.is_empty(), "{:?}", report.findings);
+}
+
+fn install_skill_cmd(home: &Path) -> Command {
+    let mut cmd = Command::cargo_bin("skillsniff").unwrap();
+    cmd.env("HOME", home).env("USERPROFILE", home);
+    cmd
+}
+
+#[test]
+fn install_skill_writes_the_shipped_adapters() {
+    let home = tempfile::tempdir().unwrap();
+    install_skill_cmd(home.path())
+        .args(["install-skill", "all"])
+        .assert()
+        .code(0);
+    let claude = home.path().join(".claude/skills/skillsniff/SKILL.md");
+    let codex = home.path().join(".agents/skills/skillsniff/SKILL.md");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    assert_eq!(
+        fs::read_to_string(&claude).unwrap(),
+        fs::read_to_string(root.join("skills/skillsniff/SKILL.md")).unwrap()
+    );
+    assert_eq!(
+        fs::read_to_string(&codex).unwrap(),
+        fs::read_to_string(root.join("skills/skillsniff/SKILL.md")).unwrap()
+    );
+    // Running again is a no-op.
+    let out = install_skill_cmd(home.path())
+        .args(["install-skill", "all"])
+        .assert()
+        .code(0);
+    assert!(String::from_utf8_lossy(&out.get_output().stdout).contains("already up to date"));
+}
+
+#[test]
+fn install_skill_detects_agents_and_needs_one() {
+    let home = tempfile::tempdir().unwrap();
+    install_skill_cmd(home.path())
+        .arg("install-skill")
+        .assert()
+        .code(3);
+    fs::create_dir_all(home.path().join(".claude")).unwrap();
+    install_skill_cmd(home.path())
+        .arg("install-skill")
+        .assert()
+        .code(0);
+    assert!(
+        home.path()
+            .join(".claude/skills/skillsniff/SKILL.md")
+            .is_file()
+    );
+    assert!(!home.path().join(".agents").exists());
+}
+
+#[test]
+fn install_skill_keeps_a_foreign_skill_unless_forced() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().join(".claude/skills/skillsniff");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: skillsniff\n---\nsomething else\n",
+    )
+    .unwrap();
+    install_skill_cmd(home.path())
+        .args(["install-skill", "claude-code"])
+        .assert()
+        .code(3);
+    assert!(
+        fs::read_to_string(dir.join("SKILL.md"))
+            .unwrap()
+            .contains("something else")
+    );
+    install_skill_cmd(home.path())
+        .args(["install-skill", "claude-code", "--force"])
+        .assert()
+        .code(0);
+    assert!(
+        fs::read_to_string(dir.join("SKILL.md"))
+            .unwrap()
+            .contains("skillsniff scan")
+    );
 }

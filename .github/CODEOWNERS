@@ -8,7 +8,8 @@
 /crates/skillsniff/src/analyzers/   @Haikeysgit
 /crates/skillsniff/src/score.rs     @Haikeysgit
 /crates/skillsniff/src/acquire/     @Haikeysgit
-/adapters/              @Haikeysgit
+/skills/                @Haikeysgit
+/.claude-plugin/        @Haikeysgit
 /tests/fixtures/        @Haikeysgit
 /.github/               @Haikeysgit
 /deny.toml              @Haikeysgit

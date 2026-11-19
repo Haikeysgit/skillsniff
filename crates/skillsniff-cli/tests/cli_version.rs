@@ -8,5 +8,8 @@ fn version_flag_prints_name_and_version() {
         .expect("binary runs");
     assert!(out.status.success());
     let stdout = String::from_utf8(out.stdout).unwrap();
-    assert!(stdout.starts_with("skillsniff 0.1.0"), "got: {stdout}");
+    assert!(
+        stdout.starts_with(concat!("skillsniff ", env!("CARGO_PKG_VERSION"))),
+        "got: {stdout}"
+    );
 }

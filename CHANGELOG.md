@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-11-19
+
+### Added
+
+- Ask your agent to "install the skillsniff skill from https://github.com/Haikeysgit/skillsniff" and it sets everything up. When the `skillsniff` program is missing, the skill installs it after asking once.
+- Claude Code plugin: `/plugin marketplace add Haikeysgit/skillsniff`.
+- `skillsniff install-skill` adds the skillsniff skill to Claude Code and Codex in one command.
+
+### Changed
+
+- One skill file, `skills/skillsniff/SKILL.md`, replaces the separate Claude Code and Codex adapters.
+
+## [0.1.0] - 2026-11-19
+
 ### Added
 
 - Design specification and threat model.
