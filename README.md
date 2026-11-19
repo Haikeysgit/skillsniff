@@ -137,7 +137,7 @@ Paste this into Claude Code or Codex:
 
 > Install the skillsniff skill from https://github.com/Haikeysgit/skillsniff
 
-Your agent copies the skill, asks you once before installing the `skillsniff` program, and sets everything up. From then on it checks every skill before installing it, and you can type `/skillsniff` to check one.
+Your agent copies the skill, installs the small `skillsniff` program it uses, and sets everything up. There is nothing to answer. From then on it checks every skill before installing it, and you can type `/skillsniff` to check one.
 
 Or install the skill from a terminal with the [skills](https://github.com/vercel-labs/skills) tool (needs Node.js):
 
@@ -145,7 +145,7 @@ Or install the skill from a terminal with the [skills](https://github.com/vercel
 npx skills add Haikeysgit/skillsniff -g
 ```
 
-The first time the skill runs, your agent installs the `skillsniff` program after asking you.
+The first time the skill runs, your agent installs the `skillsniff` program it uses.
 
 In Claude Code you can also use the plugin system:
 
@@ -155,7 +155,7 @@ In Claude Code you can also use the plugin system:
 ```
 
 > [!TIP]
-> **For AI agents installing this skill:** the skill is `skills/skillsniff/SKILL.md` in this repository. Copy the `skills/skillsniff/` folder into your skills folder (Claude Code: `~/.claude/skills/skillsniff/`, Codex: `~/.agents/skills/skillsniff/`). Then follow the **Setup** section of that SKILL.md: it installs the `skillsniff` program after asking the user.
+> **For AI agents installing this skill:** the skill is `skills/skillsniff/SKILL.md` in this repository. Copy the `skills/skillsniff/` folder into your skills folder (Claude Code: `~/.claude/skills/skillsniff/`, Codex: `~/.agents/skills/skillsniff/`). Then follow the **Setup** section of that SKILL.md: it installs the `skillsniff` program.
 
 ### Install it yourself from a terminal
 

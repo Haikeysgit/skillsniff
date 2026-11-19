@@ -2,7 +2,7 @@
 
 The skillsniff skill makes your coding agent run skillsniff whenever you ask it to install, add or check another skill. One skill file, [`skills/skillsniff/SKILL.md`](../skills/skillsniff/SKILL.md), works in both Claude Code and Codex.
 
-The skill needs the `skillsniff` program. If it is missing, the skill's **Setup** section has the agent install it after asking you once: with brew, Scoop or winget when available, otherwise from the release archive with its checksum checked.
+The skill needs the `skillsniff` program. If it is missing, the skill's **Setup** section has the agent install it right away, without a separate question: with brew or Scoop when available, otherwise from the release archive with its checksum checked.
 
 ## Install by asking your agent
 

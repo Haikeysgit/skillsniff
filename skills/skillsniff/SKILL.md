@@ -48,19 +48,17 @@ If you cannot tell which agent you are, ask the user.
 
 ## Setup
 
-skillsniff is a separate program. Install it when `skillsniff --version` fails, or when the user asks you to install this skill.
+skillsniff is a skill plus a small program that does the scanning. Installing the skill includes installing the program: when the user asked you to install this skill, or `skillsniff --version` fails, set the program up now without asking again. Tell the user in one line what you are installing and from where.
 
-1. Ask the user once: "skillsniff isn't installed yet. Install it now?" Continue only on a yes.
-2. Use the first option that fits this computer:
+1. Install the program with the first option that fits this computer:
    - `brew` is available (macOS or Linux): `brew install Haikeysgit/skillsniff/skillsniff`
    - Windows with `scoop`: `scoop bucket add skillsniff https://github.com/Haikeysgit/scoop-skillsniff`, then `scoop install skillsniff`
-   - Windows with `winget`: `winget install --id Haikeysgit.skillsniff --exact`. If winget cannot find the package, use the next option.
    - Otherwise, download the release archive:
-     1. Pick the archive for this computer from https://github.com/Haikeysgit/skillsniff/releases/latest: `skillsniff-cli-x86_64-pc-windows-msvc.zip` (any Windows, including ARM), `skillsniff-cli-aarch64-apple-darwin.tar.xz` (Apple Silicon Mac), `skillsniff-cli-x86_64-apple-darwin.tar.xz` (Intel Mac), `skillsniff-cli-x86_64-unknown-linux-musl.tar.xz` or `skillsniff-cli-aarch64-unknown-linux-musl.tar.xz` (Linux).
+     1. Pick the archive for this computer: `skillsniff-cli-x86_64-pc-windows-msvc.zip` (any Windows, including ARM), `skillsniff-cli-aarch64-apple-darwin.tar.xz` (Apple Silicon Mac), `skillsniff-cli-x86_64-apple-darwin.tar.xz` (Intel Mac), `skillsniff-cli-x86_64-unknown-linux-musl.tar.xz` or `skillsniff-cli-aarch64-unknown-linux-musl.tar.xz` (Linux).
      2. Download it and `sha256.sum` from `https://github.com/Haikeysgit/skillsniff/releases/latest/download/<file>` into a new temporary folder.
      3. Compute the archive's SHA-256 and check that it matches its line in `sha256.sum`. If it does not match, delete the download and stop. If `gh` is installed, also run `gh attestation verify <archive> --repo Haikeysgit/skillsniff` and stop if it fails.
-     4. Extract it. Move `skillsniff` (or `skillsniff.exe`) to `~/.local/bin/` on macOS or Linux, or to `%LOCALAPPDATA%\Programs\skillsniff\` on Windows. Add that folder to the user's `PATH` if it is not already there.
+     4. Extract it. Move `skillsniff` (or `skillsniff.exe`) to `~/.local/bin/` on macOS or Linux, or to `%LOCALAPPDATA%\Programs\skillsniff\` on Windows. Add that folder to the user's `PATH` if it is not already there. In this session, call the program by its full path if `PATH` has not refreshed yet.
    - Never pipe a downloaded script into a shell.
-3. Run `skillsniff --version` again. If it still fails, stop and tell the user what went wrong.
-4. Run `skillsniff install-skill` so the skill is set up for every agent on this computer. If this skill is already in place, it reports that it is up to date.
-5. If the user only asked to install skillsniff, tell them it is ready: from now on you check every skill before installing it, and they can type `/skillsniff` to check one.
+2. Run `skillsniff --version`. If it fails, stop and tell the user what went wrong.
+3. Run `skillsniff install-skill` so the skill is set up for every agent on this computer. If it is already in place, it says it is up to date.
+4. If the user only asked to install skillsniff, tell them in two lines that it is ready: from the next session you check every skill before installing it, and they can type `/skillsniff` to check one.
