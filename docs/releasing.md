@@ -42,3 +42,7 @@ The manifests live in `packaging/` with placeholder hashes. After the release is
 None of these steps are automated, and none run from this repository's workflows.
 
 Windows on ARM64 has no native build in v0.1: the `ring` crypto library does not cross-compile for that target on the Linux runner. Windows 11 on ARM runs the x64 build through its built-in emulation, and winget and Scoop install the x64 build there.
+
+## Changing the skill
+
+`skills/skillsniff/SKILL.md` goes live for agents as soon as it is merged, with no release. Raise the number in its `<!-- skillsniff-skill-version: N -->` line whenever you change it. `skillsniff setup` keeps a skill whose number is higher than its own copy, so an older program never writes over a newer skill.

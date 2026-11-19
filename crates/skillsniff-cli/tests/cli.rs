@@ -326,3 +326,41 @@ fn install_skill_keeps_a_foreign_skill_unless_forced() {
             .contains("skillsniff scan")
     );
 }
+
+#[test]
+fn install_skill_keeps_a_newer_skill_and_replaces_an_older_one() {
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().join(".claude/skills/skillsniff");
+    fs::create_dir_all(&dir).unwrap();
+    let newer = "---
+name: skillsniff
+---
+
+<!-- skillsniff-skill-version: 9999 -->
+
+Run skillsniff scan first.
+";
+    fs::write(dir.join("SKILL.md"), newer).unwrap();
+    install_skill_cmd(home.path())
+        .args(["install-skill", "claude-code"])
+        .assert()
+        .code(0);
+    assert_eq!(fs::read_to_string(dir.join("SKILL.md")).unwrap(), newer);
+
+    let older = "---
+name: skillsniff
+---
+
+Run skillsniff scan first.
+";
+    fs::write(dir.join("SKILL.md"), older).unwrap();
+    install_skill_cmd(home.path())
+        .args(["install-skill", "claude-code"])
+        .assert()
+        .code(0);
+    assert!(
+        fs::read_to_string(dir.join("SKILL.md"))
+            .unwrap()
+            .contains("skillsniff-skill-version:")
+    );
+}

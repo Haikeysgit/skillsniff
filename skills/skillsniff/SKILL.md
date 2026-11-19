@@ -3,6 +3,8 @@ name: skillsniff
 description: Checks an agent skill for hidden risks before it is installed. Use when the user asks to install, add, check or review a skill, or to set up skillsniff.
 ---
 
+<!-- skillsniff-skill-version: 2 -->
+
 # skillsniff
 
 Check an agent skill with skillsniff before it is installed, then install only the exact copy that was checked.

@@ -135,7 +135,7 @@ v0.1 is out. skillsniff is built in public.
 
 Paste this into Claude Code or Codex:
 
-> Install the skillsniff skill from https://github.com/Haikeysgit/skillsniff
+> Install skillsniff (the skill and its program) from https://github.com/Haikeysgit/skillsniff
 
 Your agent copies the skill, installs the small `skillsniff` program it uses, and sets everything up. There is nothing to answer. From then on it checks every skill before installing it, and you can type `/skillsniff` to check one.
 

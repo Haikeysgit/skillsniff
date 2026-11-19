@@ -6,7 +6,7 @@ The skill needs the `skillsniff` program. If it is missing, the skill's **Setup*
 
 ## Install by asking your agent
 
-> Install the skillsniff skill from https://github.com/Haikeysgit/skillsniff
+> Install skillsniff (the skill and its program) from https://github.com/Haikeysgit/skillsniff
 
 From a terminal: `npx skills add Haikeysgit/skillsniff -g`.
 
