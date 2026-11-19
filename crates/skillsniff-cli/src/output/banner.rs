@@ -180,6 +180,7 @@ pub fn render_welcome(mode: &OutputMode) -> String {
         "skillsniff scan github.com/owner/repo",
         "skillsniff scan ./my-skill",
         "skillsniff scan skill.zip --json",
+        "skillsniff install-skill   (adds /skillsniff to Claude Code and Codex)",
     ] {
         out.push_str(&format!(
             "  {} {example}\n",

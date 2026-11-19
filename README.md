@@ -170,7 +170,13 @@ gh attestation verify <archive> --repo Haikeysgit/skillsniff
 
 ### Use it from your agent
 
-Install the adapter so your agent checks every skill before it installs it. In Claude Code or Codex, ask the agent to use `/skillsniff`, or copy the adapter folder by hand. See [docs/adapters.md](docs/adapters.md).
+One command adds the skillsniff skill to Claude Code and Codex:
+
+```sh
+skillsniff install-skill
+```
+
+It sets up every agent it finds on your computer. Name one to pick it (`skillsniff install-skill claude-code`, `codex` or `all`), or add `--project` to install into the current project only. Start a new agent session afterwards. Your agent then checks every skill before installing it, and you can type `/skillsniff` any time. See [docs/adapters.md](docs/adapters.md) for what the skill does.
 
 ## Contributing
 

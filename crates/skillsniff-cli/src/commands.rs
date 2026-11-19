@@ -41,6 +41,8 @@ struct Cli {
 enum Command {
     /// Scan a skill from GitHub, a local folder or an archive.
     Scan(ScanArgs),
+    /// Add the skillsniff skill to Claude Code or Codex.
+    InstallSkill(crate::install_skill::InstallSkillArgs),
     /// Work with external reviews of a report.
     Review {
         #[command(subcommand)]
@@ -121,6 +123,7 @@ pub fn run<I: IntoIterator<Item = OsString>>(args: I) -> i32 {
     match cli.command {
         None => welcome(),
         Some(Command::Scan(args)) => scan_command(&args),
+        Some(Command::InstallSkill(args)) => crate::install_skill::install_skill_command(&args),
         Some(Command::Review {
             action:
                 ReviewAction::Apply {

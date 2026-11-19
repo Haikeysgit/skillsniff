@@ -4,9 +4,20 @@ An adapter is a small skill that makes your coding agent run skillsniff whenever
 
 Both adapters need the `skillsniff` command on your `PATH`. See the installation section of the [README](../README.md).
 
+## Install
+
+```sh
+skillsniff install-skill            # every agent found on this computer
+skillsniff install-skill claude-code
+skillsniff install-skill codex
+skillsniff install-skill all --project   # into the current project instead
+```
+
+Running it again after an upgrade updates the skill. An existing `skillsniff` skill that skillsniff did not write is left alone unless you pass `--force`.
+
 ## Install by hand
 
-Copy the adapter folder into the agent's skills directory.
+Or copy the adapter folder into the agent's skills directory yourself.
 
 | Agent | Source folder | Destination |
 | --- | --- | --- |

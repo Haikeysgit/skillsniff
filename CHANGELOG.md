@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Added
 
+- `skillsniff install-skill` adds the skillsniff skill to Claude Code and Codex in one command.
+
+## [0.1.0] - 2026-11-19
+
+### Added
+
 - Design specification and threat model.
 - Design boards for the overview, flow, architecture, verdict and roadmap.
 - Project documentation: README, security policy, contributing guide and code of conduct.
