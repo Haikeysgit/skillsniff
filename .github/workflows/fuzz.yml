@@ -18,12 +18,15 @@ jobs:
     name: fuzz ${{ matrix.target }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # rust-toolchain.toml pins stable for the project; cargo-fuzz needs nightly.
+      RUSTUP_TOOLCHAIN: nightly
     strategy:
       fail-fast: false
       matrix:
         target: [archive, frontmatter, code_parse, review]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly
       - uses: Swatinem/rust-cache@v2
         with:
@@ -33,7 +36,7 @@ jobs:
         run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=${{ github.event.inputs.seconds || '600' }}
       - name: Upload crashing inputs
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-artifacts-${{ matrix.target }}
           path: fuzz/artifacts/${{ matrix.target }}
